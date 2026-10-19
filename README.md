@@ -8,7 +8,7 @@ Download them from the [Releases](https://github.com/PaperColossus/free-maps/rel
 
 | Map | Size | Levels |
 | --- | --- | --- |
-| [Hedge Witch's Cabin](https://github.com/PaperColossus/free-maps/releases/tag/hedge-witchs-cabin) | 15 × 15 squares, 140 px per square, 300 DPI, gridless | Ground, Basement |
+| [Hedge Witch's Cabin](https://github.com/PaperColossus/free-maps/releases/tag/hedge-witchs-cabin) | 15 × 15 squares, 140 px per square, 300 DPI, gridless | Ground, Basement (day and night) |
 
 ## Terms of Use
 
