@@ -226,6 +226,16 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
       <div class="row"><label for="strokeGap">Stroke spacing</label>
         <div class="slide"><input id="strokeGap" type="range" min="3.5" max="28" value="10" step="0.5"><output for="strokeGap"></output></div>
       </div>
+      <div class="row"><label for="shadow">Shadows</label>
+        <select id="shadow">
+          <option value="cast" selected>Cast by light</option>
+          <option value="soft">Soft, all walls</option>
+          <option value="none">None</option>
+        </select>
+      </div>
+      <div class="row" id="lightRow"><label for="light">Light from</label>
+        <div class="slide"><input id="light" type="range" min="0" max="345" value="315" step="15"><output for="light"></output></div>
+      </div>
       <div class="row"><label for="palette">Palette</label>
         <select id="palette">
           <option value="paper">Paper</option>
@@ -236,7 +246,6 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
         </select>
       </div>
       <div class="checks">
-        <label><input id="shadow" type="checkbox" checked> Wall shadow</label>
         <label><input id="numbers" type="checkbox" checked> Room numbers</label>
         <label><input id="decor" type="checkbox" checked> Furnishings</label>
         <label><input id="showTitle" type="checkbox" checked> Title</label>
@@ -734,11 +743,11 @@ const PALETTES = {
   lantern:   { bg: "#16171b", floor: "#2c2a27", floorAlt: "#34312d", ink: "#e6dcc6", grid: "rgba(230,220,198,.11)", shadow: "rgba(0,0,0,.4)", rock: "#1f2024", wallFill: "#6f685c", detail: "rgba(230,220,198,.35)" }
 };
 const PRESETS = {
-  sketch:    { walls: "ink", floor: "plain", grid: "lines", outside: "hatch", palette: "paper", depth: 1.25, weight: 100, shadow: true },
-  parchment: { walls: "sketchy", floor: "flagstones", grid: "lines", outside: "hatch", palette: "parchment", depth: 1.5, weight: 100, shadow: true },
-  classic:   { walls: "fine", floor: "plain", grid: "lines", outside: "solid", palette: "classic", depth: 1, weight: 120, shadow: false },
-  blueprint: { walls: "double", floor: "plain", grid: "lines", outside: "cross", palette: "blueprint", depth: 1.25, weight: 90, shadow: false },
-  lantern:   { walls: "stone", floor: "cobble", grid: "dots", outside: "stipple", palette: "lantern", depth: 2, weight: 100, shadow: true }
+  sketch:    { walls: "ink", floor: "plain", grid: "lines", outside: "hatch", palette: "paper", depth: 1.25, weight: 100, shadow: "cast" },
+  parchment: { walls: "sketchy", floor: "flagstones", grid: "lines", outside: "hatch", palette: "parchment", depth: 1.5, weight: 100, shadow: "cast" },
+  classic:   { walls: "fine", floor: "plain", grid: "lines", outside: "solid", palette: "classic", depth: 1, weight: 120, shadow: "none" },
+  blueprint: { walls: "double", floor: "plain", grid: "lines", outside: "cross", palette: "blueprint", depth: 1.25, weight: 90, shadow: "none" },
+  lantern:   { walls: "stone", floor: "cobble", grid: "dots", outside: "stipple", palette: "lantern", depth: 2, weight: 100, shadow: "soft" }
 };
 
 /* ================================================================
@@ -1070,12 +1079,39 @@ function renderMap(canvas, map, st, S) {
   }
   const k = st.weight / 100;
 
-  if (st.shadow) {
+  if (st.shadow === "soft") {
+    // ambient: an even band inside every wall
     ctx.save(); ctx.clip(floorPath);
     ctx.strokeStyle = pal.shadow; ctx.lineCap = "square"; ctx.lineWidth = S * 0.42 * Math.max(0.8, k);
     ctx.beginPath();
     for (const [x0, y0, x1, y1] of runs) { ctx.moveTo(x0 * S, y0 * S); ctx.lineTo(x1 * S, y1 * S); }
     ctx.stroke();
+    ctx.restore();
+  } else if (st.shadow === "cast") {
+    // directional: each wall is swept away from the light, so only walls
+    // facing the light throw shade onto the floor (top + left for NW light)
+    const th = st.light * Math.PI / 180;
+    const ux = -Math.sin(th), uy = Math.cos(th); // direction shadows fall
+    ctx.save(); ctx.clip(floorPath);
+    ctx.fillStyle = pal.shadow;
+    for (const L of [0.5 * Math.max(0.8, k), 0.26 * Math.max(0.8, k)]) { // two layers: darker near the wall
+      const vx = ux * L * S, vy = uy * L * S;
+      ctx.beginPath();
+      for (const [x0, y0, x1, y1] of runs) {
+        let ax = x0 * S, ay = y0 * S, bx = x1 * S, by = y1 * S;
+        if ((bx - ax) * vy - (by - ay) * vx < 0) { [ax, ay, bx, by] = [bx, by, ax, ay]; } // consistent winding = union
+        ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(bx + vx, by + vy); ctx.lineTo(ax + vx, ay + vy); ctx.closePath();
+      }
+      ctx.fill();
+    }
+    if (st.decor) {
+      ctx.beginPath();
+      for (const f of map.features) {
+        if (f.type === "column") { const cx = (f.x + ux * 0.16) * S, cy = (f.y + uy * 0.16) * S; ctx.moveTo(cx + S * 0.24, cy); ctx.arc(cx, cy, S * 0.24, 0, Math.PI * 2); }
+        else if (f.type === "statue") { ctx.rect((f.x - 0.3 + ux * 0.18) * S, (f.y - 0.3 + uy * 0.18) * S, S * 0.6, S * 0.6); }
+      }
+      ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -1239,7 +1275,7 @@ function renderMap(canvas, map, st, S) {
    ================================================================ */
 const $ = id => document.getElementById(id);
 const layoutIds = ["seed", "rooms", "layout", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "loops", "doors"];
-const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "cluster", "strokeGap", "palette", "shadow", "numbers", "decor", "showTitle"];
+const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "cluster", "strokeGap", "palette", "shadow", "light", "numbers", "decor", "showTitle"];
 const SEED_WORDS = ["moss", "ember", "salt", "rook", "veil", "brass", "cinder", "hollow", "lark", "ossuary", "marrow", "tallow", "wick", "flint", "gloam", "barrow", "quill", "rust"];
 let map = null;
 
@@ -1264,12 +1300,13 @@ function lookOpts() {
     walls: $("walls").value, weight: +$("weight").value, floor: $("floor").value, grid: $("grid").value,
     outside: $("outside").value, depth: +$("depth").value,
     cluster: +$("cluster").value / 100, strokeGap: +$("strokeGap").value / 100, palette: $("palette").value,
-    shadow: $("shadow").checked, numbers: $("numbers").checked, decor: $("decor").checked, title: $("showTitle").checked
+    shadow: $("shadow").value, light: +$("light").value, numbers: $("numbers").checked, decor: $("decor").checked, title: $("showTitle").checked
   };
 }
 function syncOutputs() {
   const sq = v => +(v / 100).toFixed(3) + " sq";
-  const fmt = { mix: v => v + "%", loops: v => v + "%", weight: v => v + "%", cluster: sq, strokeGap: sq, depth: v => v + " sq" };
+  const compass = v => ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(v / 22.5) % 16];
+  const fmt = { light: v => compass(+v) + " · " + v + "°", mix: v => v + "%", loops: v => v + "%", weight: v => v + "%", cluster: sq, strokeGap: sq, depth: v => v + " sq" };
   document.querySelectorAll("output[for]").forEach(out => { const id = out.htmlFor.value; const v = $(id).value; out.textContent = fmt[id] ? fmt[id](v) : v; });
   const lay = $("layout").value;
   $("mixRow").hidden = lay !== "mixed";
@@ -1277,6 +1314,7 @@ function syncOutputs() {
   $("shapeRow").hidden = lay === "shared" || lay === "scattered";
   const out = $("outside").value;
   $("depth").disabled = out === "solid" || out === "none";
+  $("lightRow").hidden = $("shadow").value !== "cast";
   $("cluster").disabled = $("strokeGap").disabled = !(out === "hatch" || out === "cross");
 }
 function drawScreen() {
@@ -1305,7 +1343,7 @@ function schedule(layoutChanged) {
 function applyPreset(name) {
   const p = PRESETS[name]; if (!p) return;
   $("walls").value = p.walls; $("floor").value = p.floor; $("grid").value = p.grid; $("outside").value = p.outside;
-  $("palette").value = p.palette; $("depth").value = p.depth; $("weight").value = p.weight; $("shadow").checked = p.shadow;
+  $("palette").value = p.palette; $("depth").value = p.depth; $("weight").value = p.weight; $("shadow").value = p.shadow;
 }
 
 layoutIds.forEach(id => $(id).addEventListener("input", () => schedule(true)));
