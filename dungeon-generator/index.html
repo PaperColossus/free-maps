@@ -738,6 +738,163 @@ const PRESETS = {
 /* ================================================================
    Renderer
    ================================================================ */
+/* ================================================================
+   Hatching geometry
+   Technique after Watabou's hatching for One Page Dungeon, as written up
+   by Red Blob Games ("Dyson hatching"): scatter Poisson-disc points in a
+   band along the walls, give each point its Voronoi cell, and fill each
+   cell with a cluster of parallel strokes clipped to the cell. Cells are
+   pulled in from their shared edges, so clusters never overlap.
+   All geometry is in grid squares, so screen and export match exactly.
+   ================================================================ */
+function floorDistance(map, reach) {
+  const { W, H, cells } = map;
+  const isF = (x, y) => x >= 0 && y >= 0 && x < W && y < H && cells[y * W + x] !== 0;
+  return function (px, py) {
+    let best = Infinity;
+    const fx = Math.floor(px), fy = Math.floor(py);
+    for (let y = fy - reach; y <= fy + reach; y++) for (let x = fx - reach; x <= fx + reach; x++) {
+      if (!isF(x, y)) continue;
+      const dx = Math.max(x - px, 0, px - (x + 1)), dy = Math.max(y - py, 0, py - (y + 1));
+      const d = dx * dx + dy * dy;
+      if (d < best) best = d;
+    }
+    return Math.sqrt(best);
+  };
+}
+
+// Dart-throwing Poisson-disc sampler over the band 0 < distance <= limit(rng).
+function bandPoints(map, rng, spacing, accept) {
+  const { W, H } = map;
+  const cs = spacing / Math.SQRT2, gw = Math.ceil(W / cs) + 1, gh = Math.ceil(H / cs) + 1;
+  const grid = new Int32Array(gw * gh).fill(-1);
+  const pts = [];
+  const free = (x, y) => {
+    const gx = Math.floor(x / cs), gy = Math.floor(y / cs);
+    for (let yy = Math.max(0, gy - 2); yy <= Math.min(gh - 1, gy + 2); yy++)
+      for (let xx = Math.max(0, gx - 2); xx <= Math.min(gw - 1, gx + 2); xx++) {
+        const i = grid[yy * gw + xx];
+        if (i >= 0) { const q = pts[i]; if ((q.x - x) ** 2 + (q.y - y) ** 2 < spacing * spacing) return false; }
+      }
+    return true;
+  };
+  const order = [];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (map.cells[y * W + x] === 0) order.push([x, y]);
+  rng.shuffle(order);
+  for (let pass = 0; pass < 2; pass++) for (const [x, y] of order) {
+    for (let k = 0; k < 10; k++) {
+      const px = x + rng.f(), py = y + rng.f();
+      if (!accept(px, py) || !free(px, py)) continue;
+      grid[Math.floor(py / cs) * gw + Math.floor(px / cs)] = pts.length;
+      pts.push({ x: px, y: py });
+    }
+  }
+  return { pts, grid, gw, gh, cs };
+}
+
+function clipHalfPlane(poly, px, py, ux, uy, c) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const fa = (a[0] - px) * ux + (a[1] - py) * uy - c, fb = (b[0] - px) * ux + (b[1] - py) * uy - c;
+    if (fa <= 0) out.push(a);
+    if ((fa <= 0) !== (fb <= 0)) { const t = fa / (fa - fb); out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]); }
+  }
+  return out;
+}
+
+function hatchCells(map, depth) {
+  map._hatch = map._hatch || {};
+  if (map._hatch[depth]) return map._hatch[depth];
+  const rng = RNG(map.seed + "|hatch|" + depth);
+  const dist = floorDistance(map, depth + 1);
+  const spacing = 0.62;                 // closest two cluster centres may be, in squares
+  const { pts, grid, gw, gh, cs } = bandPoints(map, rng, spacing, (x, y) => {
+    const d = dist(x, y);
+    return d > 0 && d <= depth * (0.72 + 0.42 * rng.f()); // ragged outer edge
+  });
+  const gap = 0.045, maxR = 0.95, reach = Math.ceil((maxR * 2) / cs);
+  const cells = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    let poly = [];
+    for (let k = 0; k < 10; k++) { const a = (k / 10) * Math.PI * 2 + 0.3; poly.push([p.x + Math.cos(a) * maxR, p.y + Math.sin(a) * maxR]); }
+    const gx = Math.floor(p.x / cs), gy = Math.floor(p.y / cs);
+    const nbrs = [];
+    for (let yy = Math.max(0, gy - reach); yy <= Math.min(gh - 1, gy + reach); yy++)
+      for (let xx = Math.max(0, gx - reach); xx <= Math.min(gw - 1, gx + reach); xx++) {
+        const j = grid[yy * gw + xx];
+        if (j < 0 || j === i) continue;
+        const q = pts[j], dx = q.x - p.x, dy = q.y - p.y, L = Math.hypot(dx, dy);
+        if (L > maxR * 2) continue;
+        nbrs.push(j);
+        poly = clipHalfPlane(poly, p.x, p.y, dx / L, dy / L, L / 2 - gap);
+        if (poly.length < 3) break;
+      }
+    if (poly.length < 3) continue;
+    cells.push({ x: p.x, y: p.y, poly, nbrs, i });
+  }
+  // Pick each cluster's angle to differ from its neighbours' as much as possible.
+  const angleOf = new Map();
+  for (const c of cells) {
+    let bestA = 0, bestScore = -1;
+    for (let t = 0; t < 4; t++) {
+      const a = rng.f() * Math.PI;
+      let score = Math.PI;
+      for (const j of c.nbrs) if (angleOf.has(j)) {
+        let d = Math.abs(a - angleOf.get(j)) % Math.PI; d = Math.min(d, Math.PI - d);
+        score = Math.min(score, d);
+      }
+      if (score > bestScore) { bestScore = score; bestA = a; }
+    }
+    c.angle = bestA; angleOf.set(c.i, bestA);
+  }
+  map._hatch[depth] = cells;
+  return cells;
+}
+
+// Strokes of a cluster: parallel lines across a convex cell at a given angle and spacing.
+function clusterStrokes(c, angle, step) {
+  const ux = Math.cos(angle), uy = Math.sin(angle), nx = -uy, ny = ux;
+  let tmin = Infinity, tmax = -Infinity;
+  for (const [x, y] of c.poly) { const t = (x - c.x) * nx + (y - c.y) * ny; if (t < tmin) tmin = t; if (t > tmax) tmax = t; }
+  const out = [];
+  const count = Math.floor((tmax - tmin) / step);
+  const start = (tmin + tmax) / 2 - (count * step) / 2;
+  for (let k = 0; k <= count; k++) {
+    const t = start + k * step;
+    let smin = Infinity, smax = -Infinity;
+    for (let e = 0; e < c.poly.length; e++) {
+      const a = c.poly[e], b = c.poly[(e + 1) % c.poly.length];
+      const da = (a[0] - c.x) * nx + (a[1] - c.y) * ny - t, db = (b[0] - c.x) * nx + (b[1] - c.y) * ny - t;
+      if ((da <= 0) === (db <= 0)) continue;
+      const f = da / (da - db), ix = a[0] + (b[0] - a[0]) * f, iy = a[1] + (b[1] - a[1]) * f;
+      const sv = (ix - c.x) * ux + (iy - c.y) * uy;
+      if (sv < smin) smin = sv; if (sv > smax) smax = sv;
+    }
+    if (smax - smin < 0.08) continue;
+    const ox = c.x + nx * t, oy = c.y + ny * t;
+    out.push([ox + ux * smin, oy + uy * smin, ox + ux * smax, oy + uy * smax]);
+  }
+  return out;
+}
+
+function stippleDots(map, depth) {
+  map._stipple = map._stipple || {};
+  if (map._stipple[depth]) return map._stipple[depth];
+  const rng = RNG(map.seed + "|stipple|" + depth);
+  const dist = floorDistance(map, depth + 1);
+  // dense against the wall, thinning out with distance; dots never touch
+  const { pts } = bandPoints(map, rng, 0.11, (x, y) => {
+    const d = dist(x, y);
+    if (d <= 0 || d > depth) return false;
+    return rng.f() < Math.pow(1 - d / depth, 1.6);
+  });
+  for (const p of pts) p.r = 0.022 + rng.f() * 0.022;
+  map._stipple[depth] = pts;
+  return pts;
+}
+
 let noiseCanvas = null;
 function noisePattern(ctx) {
   if (!noiseCanvas) {
@@ -795,42 +952,24 @@ function renderMap(canvas, map, st, S) {
 
   // ---- surroundings ----
   ctx.lineCap = "round";
-  if (st.outside === "hatch") {
-    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(0.6, S * 0.03);
+  if (st.outside === "hatch" || st.outside === "cross") {
+    const cross = st.outside === "cross";
+    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(0.6, S * (cross ? 0.024 : 0.03));
     ctx.beginPath();
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const d = dist[y * W + x];
-      if (d === 0 || d > st.depth) continue;
-      if (d === st.depth && st.depth > 1 && rr.f() < 0.45) continue;
-      const clusters = d === 1 ? 2 : 1;
-      for (let c = 0; c < clusters; c++) {
-        const cx = (x + 0.5) * S + j(0.35), cy = (y + 0.5) * S + j(0.35);
-        const ang = rr.range(0, Math.PI), ca = Math.cos(ang), sa = Math.sin(ang);
-        const n = rr.int(3, 4), gap = S * 0.15, len = S * rr.range(0.55, 0.85);
-        for (let k = 0; k < n; k++) {
-          const off = (k - (n - 1) / 2) * gap, l = len * rr.range(0.75, 1);
-          const px = cx - sa * off, py = cy + ca * off;
-          ctx.moveTo(px - ca * l / 2, py - sa * l / 2); ctx.lineTo(px + ca * l / 2, py + sa * l / 2);
-        }
+    const jit = 0.035;
+    for (const c of hatchCells(map, st.depth)) {
+      const sets = cross ? [[c.angle, 0.2], [c.angle + Math.PI / 2, 0.2]] : [[c.angle, 0.13]];
+      for (const [a, step] of sets) for (const [x0, y0, x1, y1] of clusterStrokes(c, a, step)) {
+        ctx.moveTo((x0 + rr.range(-jit, jit)) * S, (y0 + rr.range(-jit, jit)) * S);
+        ctx.lineTo((x1 + rr.range(-jit, jit)) * S, (y1 + rr.range(-jit, jit)) * S);
       }
     }
     ctx.stroke();
-  } else if (st.outside === "cross") {
-    ctx.save(); ctx.clip(bandPath);
-    ctx.strokeStyle = pal.ink; ctx.globalAlpha = 0.7; ctx.lineWidth = Math.max(1, S * 0.025);
-    const span = (W + H) * S, step = S * 0.2;
-    ctx.beginPath();
-    for (let t = -H * S; t < W * S; t += step) { ctx.moveTo(t + j(0.03), 0); ctx.lineTo(t + H * S + j(0.03), H * S); }
-    for (let t = 0; t < span; t += step * 1.6) { ctx.moveTo(t + j(0.03), 0); ctx.lineTo(t - H * S + j(0.03), H * S); }
-    ctx.stroke(); ctx.restore();
   } else if (st.outside === "stipple") {
     ctx.fillStyle = pal.ink;
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const d = dist[y * W + x];
-      if (d === 0 || d > st.depth) continue;
-      const n = Math.round((st.depth - d + 1) * 7 / st.depth) + 2;
-      for (let k = 0; k < n; k++) { ctx.beginPath(); ctx.arc((x + rr.f()) * S, (y + rr.f()) * S, S * rr.range(0.018, 0.04), 0, Math.PI * 2); ctx.fill(); }
-    }
+    ctx.beginPath();
+    for (const p of stippleDots(map, st.depth)) { ctx.moveTo((p.x + p.r) * S, p.y * S); ctx.arc(p.x * S, p.y * S, Math.max(0.5, p.r * S), 0, Math.PI * 2); }
+    ctx.fill();
   } else if (st.outside === "solid") {
     // thin edge line around the rock face
     ctx.save(); ctx.clip(bandPath);

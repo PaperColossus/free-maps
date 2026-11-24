@@ -18,6 +18,8 @@ Download them from the [Releases](https://github.com/PaperColossus/free-maps/rel
 - **Look:** wall style (solid ink, sketchy, outlined, stone blocks, fine line), floor (plain, flagstones, planks, checker, cobbles), grid (lines, dots, none), surroundings (hatching, cross-hatch, stipple, solid rock, bare) and palette. Changing the look never changes the layout.
 - **Export:** PNG at 70 to 200 px per square.
 
+The hatching technique (Poisson-disc points, Voronoi cells, a cluster of parallel strokes per cell) follows Watabou's approach for One Page Dungeon, as described by [Red Blob Games](https://www.redblobgames.com/x/1947-dyson-hatching/). The code here is a separate implementation.
+
 ## Terms of Use
 
 - Free for non-commercial use: run them in your own games, at home or online.
