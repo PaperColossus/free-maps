@@ -218,13 +218,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
         </select>
       </div>
       <div class="row"><label for="depth">Hatch depth</label>
-        <div class="slide"><input id="depth" type="range" min="1" max="3" value="2"><output for="depth"></output></div>
+        <div class="slide"><input id="depth" type="range" min="0.5" max="3" value="1.25" step="0.25"><output for="depth"></output></div>
       </div>
       <div class="row"><label for="cluster">Cluster size</label>
-        <div class="slide"><input id="cluster" type="range" min="35" max="110" value="62" step="1"><output for="cluster"></output></div>
+        <div class="slide"><input id="cluster" type="range" min="18" max="110" value="45" step="1"><output for="cluster"></output></div>
       </div>
       <div class="row"><label for="strokeGap">Stroke spacing</label>
-        <div class="slide"><input id="strokeGap" type="range" min="7" max="28" value="13" step="1"><output for="strokeGap"></output></div>
+        <div class="slide"><input id="strokeGap" type="range" min="3.5" max="28" value="10" step="0.5"><output for="strokeGap"></output></div>
       </div>
       <div class="row"><label for="palette">Palette</label>
         <select id="palette">
@@ -734,11 +734,11 @@ const PALETTES = {
   lantern:   { bg: "#16171b", floor: "#2c2a27", floorAlt: "#34312d", ink: "#e6dcc6", grid: "rgba(230,220,198,.11)", shadow: "rgba(0,0,0,.4)", rock: "#1f2024", wallFill: "#6f685c", detail: "rgba(230,220,198,.35)" }
 };
 const PRESETS = {
-  sketch:    { walls: "ink", floor: "plain", grid: "lines", outside: "hatch", palette: "paper", depth: 2, weight: 100, shadow: true },
-  parchment: { walls: "sketchy", floor: "flagstones", grid: "lines", outside: "hatch", palette: "parchment", depth: 2, weight: 100, shadow: true },
+  sketch:    { walls: "ink", floor: "plain", grid: "lines", outside: "hatch", palette: "paper", depth: 1.25, weight: 100, shadow: true },
+  parchment: { walls: "sketchy", floor: "flagstones", grid: "lines", outside: "hatch", palette: "parchment", depth: 1.5, weight: 100, shadow: true },
   classic:   { walls: "fine", floor: "plain", grid: "lines", outside: "solid", palette: "classic", depth: 1, weight: 120, shadow: false },
-  blueprint: { walls: "double", floor: "plain", grid: "lines", outside: "cross", palette: "blueprint", depth: 2, weight: 90, shadow: false },
-  lantern:   { walls: "stone", floor: "cobble", grid: "dots", outside: "stipple", palette: "lantern", depth: 3, weight: 100, shadow: true }
+  blueprint: { walls: "double", floor: "plain", grid: "lines", outside: "cross", palette: "blueprint", depth: 1.25, weight: 90, shadow: false },
+  lantern:   { walls: "stone", floor: "cobble", grid: "dots", outside: "stipple", palette: "lantern", depth: 2, weight: 100, shadow: true }
 };
 
 /* ================================================================
@@ -770,7 +770,7 @@ function floorDistance(map, reach) {
 }
 
 // Dart-throwing Poisson-disc sampler over the band 0 < distance <= limit(rng).
-function bandPoints(map, rng, spacing, accept) {
+function bandPoints(map, rng, spacing, accept, near) {
   const { W, H } = map;
   const cs = spacing / Math.SQRT2, gw = Math.ceil(W / cs) + 1, gh = Math.ceil(H / cs) + 1;
   const grid = new Int32Array(gw * gh).fill(-1);
@@ -785,10 +785,11 @@ function bandPoints(map, rng, spacing, accept) {
     return true;
   };
   const order = [];
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (map.cells[y * W + x] === 0) order.push([x, y]);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (map.cells[y * W + x] === 0 && near(x + 0.5, y + 0.5)) order.push([x, y]);
   rng.shuffle(order);
+  const tries = Math.min(160, Math.max(10, Math.ceil(3.5 / (spacing * spacing))));
   for (let pass = 0; pass < 2; pass++) for (const [x, y] of order) {
-    for (let k = 0; k < 10; k++) {
+    for (let k = 0; k < tries; k++) {
       const px = x + rng.f(), py = y + rng.f();
       if (!accept(px, py) || !free(px, py)) continue;
       grid[Math.floor(py / cs) * gw + Math.floor(px / cs)] = pts.length;
@@ -814,13 +815,13 @@ function hatchCells(map, depth, size) {
   map._hatch = map._hatch || {};
   if (map._hatch[key]) return map._hatch[key];
   const rng = RNG(map.seed + "|hatch|" + key);
-  const dist = floorDistance(map, depth + 1);
+  const dist = floorDistance(map, Math.ceil(depth) + 1);
   const spacing = size;                 // closest two cluster centres may be, in squares
   const { pts, grid, gw, gh, cs } = bandPoints(map, rng, spacing, (x, y) => {
     const d = dist(x, y);
     return d > 0 && d <= depth * (0.72 + 0.42 * rng.f()); // ragged outer edge
-  });
-  const gap = 0.045, maxR = spacing * 1.53, reach = Math.ceil((maxR * 2) / cs);
+  }, (x, y) => dist(x, y) <= depth * 1.14 + 0.71);
+  const gap = Math.max(0.022, 0.045 * Math.min(1, size / 0.62)), maxR = spacing * 1.53, reach = Math.ceil((maxR * 2) / cs);
   const cells = [];
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
@@ -862,6 +863,7 @@ function hatchCells(map, depth, size) {
 
 // Strokes of a cluster: parallel lines across a convex cell at a given angle and spacing.
 function clusterStrokes(c, angle, step) {
+  const minLen = Math.min(0.08, step * 0.8);
   const ux = Math.cos(angle), uy = Math.sin(angle), nx = -uy, ny = ux;
   let tmin = Infinity, tmax = -Infinity;
   for (const [x, y] of c.poly) { const t = (x - c.x) * nx + (y - c.y) * ny; if (t < tmin) tmin = t; if (t > tmax) tmax = t; }
@@ -879,7 +881,7 @@ function clusterStrokes(c, angle, step) {
       const sv = (ix - c.x) * ux + (iy - c.y) * uy;
       if (sv < smin) smin = sv; if (sv > smax) smax = sv;
     }
-    if (smax - smin < 0.08) continue;
+    if (smax - smin < minLen) continue;
     const ox = c.x + nx * t, oy = c.y + ny * t;
     out.push([ox + ux * smin, oy + uy * smin, ox + ux * smax, oy + uy * smax]);
   }
@@ -890,13 +892,13 @@ function stippleDots(map, depth) {
   map._stipple = map._stipple || {};
   if (map._stipple[depth]) return map._stipple[depth];
   const rng = RNG(map.seed + "|stipple|" + depth);
-  const dist = floorDistance(map, depth + 1);
+  const dist = floorDistance(map, Math.ceil(depth) + 1);
   // dense against the wall, thinning out with distance; dots never touch
   const { pts } = bandPoints(map, rng, 0.11, (x, y) => {
     const d = dist(x, y);
     if (d <= 0 || d > depth) return false;
     return rng.f() < Math.pow(1 - d / depth, 1.6);
-  });
+  }, (x, y) => dist(x, y) <= depth + 0.71);
   for (const p of pts) p.r = 0.022 + rng.f() * 0.022;
   map._stipple[depth] = pts;
   return pts;
@@ -961,10 +963,11 @@ function renderMap(canvas, map, st, S) {
   ctx.lineCap = "round";
   if (st.outside === "hatch" || st.outside === "cross") {
     const cross = st.outside === "cross";
-    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(0.6, S * (cross ? 0.024 : 0.03));
-    ctx.beginPath();
-    const jit = 0.035;
     const step = st.strokeGap;
+    // line weight and wobble shrink with the spacing, so tight hatching stays crisp
+    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(0.5, S * Math.min(cross ? 0.024 : 0.03, step * 0.32));
+    ctx.beginPath();
+    const jit = Math.min(0.035, step * 0.22);
     for (const c of hatchCells(map, st.depth, st.cluster)) {
       const sets = cross ? [[c.angle, step * 1.5], [c.angle + Math.PI / 2, step * 1.5]] : [[c.angle, step]];
       for (const [a, step] of sets) for (const [x0, y0, x1, y1] of clusterStrokes(c, a, step)) {
@@ -1265,8 +1268,8 @@ function lookOpts() {
   };
 }
 function syncOutputs() {
-  const sq = v => (v / 100).toFixed(2) + " sq";
-  const fmt = { mix: v => v + "%", loops: v => v + "%", weight: v => v + "%", cluster: sq, strokeGap: sq };
+  const sq = v => +(v / 100).toFixed(3) + " sq";
+  const fmt = { mix: v => v + "%", loops: v => v + "%", weight: v => v + "%", cluster: sq, strokeGap: sq, depth: v => v + " sq" };
   document.querySelectorAll("output[for]").forEach(out => { const id = out.htmlFor.value; const v = $(id).value; out.textContent = fmt[id] ? fmt[id](v) : v; });
   const lay = $("layout").value;
   $("mixRow").hidden = lay !== "mixed";
