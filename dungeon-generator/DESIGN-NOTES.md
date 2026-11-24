@@ -21,6 +21,7 @@ Before adding a new shape or generation feature, check how established open-sour
 - **Cave rooms** grow from a core circle by adding overlapping lumpy circles, each centred on floor that already exists. This follows Brogue's chunky rooms, which accept a new radius-2 circle only where floor already is. Smooth "mouth" lobes touch each side so halls and doors have a straight face to attach to.
 - **Lakes** are lumpy blobs with a shallow rim (Brogue's "wreath"). Brogue keeps a lake only if the level stays connected. Here every lake keeps at least a square of dry floor between it and the walls, so it can never cut a room's doors off from each other.
 - **Connectivity check:** in the Scattered arrangement, any room the winding halls could not reach is joined to its nearest connected rooms. If its shape offers no reachable doorway, it falls back to a rectangle.
+- **Natural connections:** caves never get built doors between them. Caves that touch merge without a wall, and a hall between two caves is drawn as a rough tunnel. A hall or built room meeting a cave usually gets a plain opening (75% for halls, 50% for rooms), otherwise a door.
 - **Door sites** have to be on a straight face. Brogue accepts a door site only when exactly one direction faces into the room, which rules out corners.
 
 ## Not yet adopted, worth trying
@@ -30,3 +31,17 @@ Before adding a new shape or generation feature, check how established open-sour
 - **Symmetric decoration sets** from DCSS: rings of 8 pillars, centre features, glass partitions with doors.
 - **Rooms within rooms:** NetHack's mausoleum and nesting rooms.
 - **Lakes that touch walls, with bridges** placed only where they save a long walk. This needs a connectivity check like Brogue's (`lakeDisruptsPassability`).
+
+## Layout structure: symmetry and loops (researched, not built yet)
+
+| Source | What it says |
+| --- | --- |
+| [Watabou, One Page Dungeon comments](https://watabou.itch.io/one-page-dungeon/comments?after=236) | Rooms grow recursively. An expanded room usually gets identical wings left and right of its entrance, one child opposite the entrance, or both. Children are occasionally made asymmetric because "perfect symmetry doesn't look good". The result is still a tree, so loops are added afterwards by joining adjacent rooms and adding tunnels. The goal is local symmetry that makes a dungeon look planned. |
+| [Boris the Brave, "Dungeon generation in Unexplored"](https://www.boristhebrave.com/2021/04/10/dungeon-generation-in-unexplored/) | Cyclic generation: on a roughly 5×5 grid of nodes, draw a start, a goal and a big loop between them. The two arcs from entrance to goal become two routes, and each of Unexplored's 24 cycle types decides how they are used (two alternative routes, lock and key, hidden shortcut, hub, lake). Minor cycles add short detours, then dead ends are added. The graph is then realised as rooms and corridors. |
+| [Boris the Brave, "Lock and key dungeons"](https://www.boristhebrave.com/2021/02/27/lock-and-key-dungeons) | Locks and keys can be anything that blocks or enables progress. Gating one arc of a loop turns a redundant loop into a meaningful choice. |
+| [The Alexandrian, "Xandering the dungeon"](https://thealexandrian.net/wordpress/13103/roleplaying-games/xandering-the-dungeon-part-2-xandering-techniques) | Branches still play linearly; loops are what make a dungeon non-linear. Techniques include multiple entrances, loops, several connections between levels, secret and unusual paths, sub-levels, and entering at the middle. Too many loops make choices meaningless. |
+
+Plan:
+
+- **Symmetry option** (Asymmetric / Partly symmetric / Symmetric). Grow from a root room on a main axis and spawn mirrored pairs of child rooms with the same shape, size and hall. The partly symmetric setting breaks some pairs, Watabou-style. Loops are added after the tree is grown.
+- **Cyclic option.** Lay out a main loop from the entrance to a goal room as two arcs of rooms, then add one or two minor loops as detours. Optionally mark one arc with a locked or secret door, and a key room on the other arc.

@@ -550,7 +550,31 @@ function buildGeometry(map) {
   const byId = new Map(rooms.map(r => [r.id, r]));
   const polys = [];
   for (const r of rooms) { r.poly = roomPoly(r); [r.lx, r.ly] = roomLabel(r); polys.push(...r.poly); }
-  for (let y = 0; y < H; y++) { let x = 0; while (x < W) { if (cells[y * W + x] === -1) { const s0 = x; while (x < W && cells[y * W + x] === -1) x++; polys.push(orient([[s0, y], [x, y], [x, y + 1], [s0, y + 1]])); } else x++; } }
+  const built = i => cells[i] === -1 && !(map.tunnels && map.tunnels[i]);
+  for (let y = 0; y < H; y++) { let x = 0; while (x < W) { if (built(y * W + x)) { const s0 = x; while (x < W && built(y * W + x)) x++; polys.push(orient([[s0, y], [x, y], [x, y + 1], [s0, y + 1]])); } else x++; } }
+  if (map.tunnels) { // rough natural tunnels: one lumpy blob per square, overlapping its neighbours
+    // Blobs at each square and halfway to each tunnel or cave neighbour, so
+    // the tunnel reads as one worn passage of varying width, not beads.
+    const tr = RNG(map.seed + "|tunnel");
+    const width = new Float32Array(cells.length);
+    for (let i = 0; i < cells.length; i++) if (map.tunnels[i]) width[i] = tr.range(0.5, 0.66);
+    const blob = (cx, cy, r0) => {
+      const pts = []; let v = 0;
+      for (let k = 0; k < 18; k++) { v = v * 0.5 + tr.range(-0.05, 0.05); const a = k / 18 * Math.PI * 2; pts.push([cx + Math.cos(a) * r0 * (1 + v), cy + Math.sin(a) * r0 * (1 + v)]); }
+      polys.push(orient(pts));
+    };
+    const caveIds = new Set(rooms.filter(r => r.shape.type === "cave").map(r => r.id));
+    for (let i = 0; i < cells.length; i++) if (map.tunnels[i]) {
+      const x = i % W, y = Math.floor(i / W);
+      blob(x + 0.5, y + 0.5, width[i]);
+      for (const [dx, dy] of DIRS) {
+        const nx = x + dx, ny = y + dy, j = ny * W + nx;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        if (map.tunnels[j] && (dx > 0 || dy > 0)) blob(x + 0.5 + dx / 2, y + 0.5 + dy / 2, (width[i] + width[j]) / 2 * 0.97);
+        else if (caveIds.has(cells[j])) blob(x + 0.5 + dx * 0.6, y + 0.5 + dy * 0.6, width[i] * 0.95);
+      }
+    }
+  }
   for (const d of doors) { // square off door mouths into shaped rooms
     const pair = d.o === "v" ? [[d.x - 1, d.y], [d.x, d.y]] : [[d.x, d.y - 1], [d.x, d.y]];
     for (const [k2, [cx, cy]] of pair.entries()) {
@@ -614,11 +638,25 @@ function generate(o) {
     if (x1 !== x2) return "v" + Math.max(x1, x2) + "," + y1;
     return "h" + x1 + "," + Math.max(y1, y2);
   }
+  const isCave = v => v > 0 && rooms[v - 1] && rooms[v - 1].shape.type === "cave";
+  // Natural caves don't get built doors: cave to cave is always open, a hall
+  // or built room meeting a cave is usually a plain opening.
   function addDoor(x1, y1, x2, y2, type) {
     const k = edgeKey(x1, y1, x2, y2);
     const d = x1 !== x2 ? { o: "v", x: Math.max(x1, x2), y: y1 } : { o: "h", x: x1, y: Math.max(y1, y2) };
+    if (!type) {
+      const a = get(x1, y1), b = get(x2, y2), ca = isCave(a), cb = isCave(b);
+      if (ca && cb) type = "open";
+      else if (ca || cb) { const other = ca ? b : a; if (rng.chance(other === -1 ? 0.75 : 0.5)) type = "open"; }
+    }
     d.type = type || doorType();
     doors.set(k, d);
+  }
+  // Halls between two caves are natural tunnels; any other hall is built.
+  const tunnelCells = new Set(), builtCells = new Set();
+  function markHall(cells, ra, rb) {
+    const tunnel = isCave(ra) && isCave(rb);
+    for (const [x, y] of cells) (tunnel ? tunnelCells : builtCells).add(I(x, y));
   }
   function roomSize() {
     let w = rng.int(o.minSize, o.maxSize), h = rng.int(o.minSize, o.maxSize);
@@ -745,6 +783,7 @@ function generate(o) {
       const { r, cells, p, sx, sy, ex, ey, last } = best;
       r.id = rooms.length + 1; rooms.push(r); setRoom(r); deg[r.id] = 0;
       for (const [x, y] of cells) grid[I(x, y)] = -1;
+      markHall(cells, p.id, r.id);
       if (hall) { addDoor(sx, sy, cells[0][0], cells[0][1]); addDoor(last[0], last[1], ex, ey); }
       else addDoor(sx, sy, ex, ey);
       links.add(linkKey(p.id, r.id)); deg[p.id]++; deg[r.id]++;
@@ -785,6 +824,7 @@ function generate(o) {
         for (let t = 1; t <= c.len; t++) cells.push([c.sx + dx * t, c.sy + dy * t]);
         if (cells.length && !hallOK(cells)) continue;
         for (const [x, y] of cells) grid[I(x, y)] = -1;
+        markHall(cells, ...k.split("-").map(Number));
         const end = cells.length ? cells[cells.length - 1] : [c.sx, c.sy];
         if (cells.length) { addDoor(c.sx, c.sy, cells[0][0], cells[0][1]); addDoor(end[0], end[1], end[0] + dx, end[1] + dy); }
         else addDoor(c.sx, c.sy, c.sx + dx, c.sy + dy);
@@ -840,6 +880,7 @@ function generate(o) {
     for (let s = goal; s >= 0; s = prev[s]) { const ci = s >> 2; path.push([bx0 + ci % bw, by0 + Math.floor(ci / bw), s & 3]); }
     path.reverse();
     for (const [x, y] of path) if (grid[I(x, y)] === 0) grid[I(x, y)] = -1;
+    markHall(path, a.id, b.id);
     const [fx, fy, fd] = path[0];
     addDoor(fx - DIRS[fd][0], fy - DIRS[fd][1], fx, fy);
     const lastC = path[path.length - 1];
@@ -960,7 +1001,9 @@ function generate(o) {
   const outRooms = rooms.map(r => ({ id: r.id, num: r.num, depth: r.depth, x: r.x - ox, y: r.y - oy, w: r.w, h: r.h, shape: r.shape }));
   const outDoors = [...doors.values()].map(d => ({ o: d.o, x: d.x - ox, y: d.y - oy, type: d.type }));
   const outNiches = niches.map(n => ({ ...n, x: n.x - ox, y: n.y - oy }));
-  const map = { W, H, cells, rooms: outRooms, doors: outDoors, niches: outNiches, seed: o.seed };
+  const tunnels = new Uint8Array(W * H);
+  for (const gi of tunnelCells) if (!builtCells.has(gi)) { const x = gi % G - ox, y = Math.floor(gi / G) - oy; if (x >= 0 && y >= 0 && x < W && y < H && cells[y * W + x] === -1) tunnels[y * W + x] = 1; }
+  const map = { W, H, cells, tunnels, rooms: outRooms, doors: outDoors, niches: outNiches, seed: o.seed };
   buildGeometry(map);
   map.features = furnish(map, o.seed);
   map.lakes = addLakes(map, o.seed, o.water);
@@ -1555,14 +1598,23 @@ function renderMap(canvas, map, st, S) {
   // ---- interior walls ----
   // Centred on grid lines, only where real floor lies on both sides
   // (between rooms, or between a room and a hall).
-  const openDoor = new Set(map.doors.filter(d => d.type === "arch" || d.type === "bars").map(d => d.o + d.x + "," + d.y));
+  const openDoor = new Set(map.doors.filter(d => d.type === "arch" || d.type === "bars" || d.type === "open").map(d => d.o + d.x + "," + d.y));
+  const caveId = new Set(map.rooms.filter(r => r.shape.type === "cave").map(r => r.id));
   const fl = map.floorAt, T3 = [0.25, 0.5, 0.75];
   const differs = (a, b) => a !== 0 && b !== 0 && a !== b;
   // Unit edge i along line `pos` ("h": y = pos, between rows pos-1 and pos;
   // "v": x = pos, between columns pos-1 and pos). P is the up/left side.
   const side = (o, pos, i) => o === "h" ? [at(i, pos - 1), at(i, pos)] : [at(pos - 1, i), at(pos, i)];
   const floorBoth = (o, pos, i) => o === "h" ? T3.every(t => fl(i + t, pos - 0.15) && fl(i + t, pos + 0.15)) : T3.every(t => fl(pos - 0.15, i + t) && fl(pos + 0.15, i + t));
-  const wallEdge = (o, pos, i) => { const [a, b] = side(o, pos, i); return differs(a, b) && floorBoth(o, pos, i); };
+  const wallEdge = (o, pos, i) => {
+    const [a, b] = side(o, pos, i);
+    if (caveId.has(a) && caveId.has(b)) return false; // neighbouring caves simply open into each other
+    if (map.tunnels && ((a === -1 && caveId.has(b)) || (b === -1 && caveId.has(a)))) {
+      const ti = o === "h" ? (a === -1 ? (pos - 1) * W + i : pos * W + i) : (a === -1 ? i * W + pos - 1 : i * W + pos);
+      if (map.tunnels[ti]) return false; // a tunnel runs straight into its cave
+    }
+    return differs(a, b) && floorBoth(o, pos, i);
+  };
   // Outer walls sit just outside the floor, so an inner wall has to shift
   // half a wall off the grid line to meet them flush: into the hall for a
   // room/hall wall, and for a wall between two rooms toward the side whose
