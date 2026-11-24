@@ -32,16 +32,18 @@ Before adding a new shape or generation feature, check how established open-sour
 - **Rooms within rooms:** NetHack's mausoleum and nesting rooms.
 - **Lakes that touch walls, with bridges** placed only where they save a long walk. This needs a connectivity check like Brogue's (`lakeDisruptsPassability`).
 
-## Layout structure: symmetry and loops (researched, not built yet)
+## Layout structure: symmetry and loops
 
 | Source | What it says |
 | --- | --- |
 | [Watabou, One Page Dungeon comments](https://watabou.itch.io/one-page-dungeon/comments?after=236) | Rooms grow recursively. An expanded room usually gets identical wings left and right of its entrance, one child opposite the entrance, or both. Children are occasionally made asymmetric because "perfect symmetry doesn't look good". The result is still a tree, so loops are added afterwards by joining adjacent rooms and adding tunnels. The goal is local symmetry that makes a dungeon look planned. |
-| [Boris the Brave, "Dungeon generation in Unexplored"](https://www.boristhebrave.com/2021/04/10/dungeon-generation-in-unexplored/) | Cyclic generation: on a roughly 5×5 grid of nodes, draw a start, a goal and a big loop between them. The two arcs from entrance to goal become two routes, and each of Unexplored's 24 cycle types decides how they are used (two alternative routes, lock and key, hidden shortcut, hub, lake). Minor cycles add short detours, then dead ends are added. The graph is then realised as rooms and corridors. |
+| [Boris the Brave, "Dungeon generation in Unexplored"](https://www.boristhebrave.com/2021/04/10/dungeon-generation-in-unexplored/) | Cyclic generation: start with a start, a goal and a big loop between them. The two arcs become two routes, and the cycle type decides how they are used (alternative routes, lock and key, hidden shortcut, hub). Minor cycles add short detours, then dead ends are added. |
 | [Boris the Brave, "Lock and key dungeons"](https://www.boristhebrave.com/2021/02/27/lock-and-key-dungeons) | Locks and keys can be anything that blocks or enables progress. Gating one arc of a loop turns a redundant loop into a meaningful choice. |
-| [The Alexandrian, "Xandering the dungeon"](https://thealexandrian.net/wordpress/13103/roleplaying-games/xandering-the-dungeon-part-2-xandering-techniques) | Branches still play linearly; loops are what make a dungeon non-linear. Techniques include multiple entrances, loops, several connections between levels, secret and unusual paths, sub-levels, and entering at the middle. Too many loops make choices meaningless. |
+| [The Alexandrian, "Xandering the dungeon"](https://thealexandrian.net/wordpress/13103/roleplaying-games/xandering-the-dungeon-part-2-xandering-techniques) | Branches still play linearly; loops are what make a dungeon non-linear. Too many loops make choices meaningless. |
 
-Plan:
+Built:
 
-- **Symmetry option** (Asymmetric / Partly symmetric / Symmetric). Grow from a root room on a main axis and spawn mirrored pairs of child rooms with the same shape, size and hall. The partly symmetric setting breaks some pairs, Watabou-style. Loops are added after the tree is grown.
-- **Cyclic option.** Lay out a main loop from the entrance to a goal room as two arcs of rooms, then add one or two minor loops as detours. Optionally mark one arc with a locked or secret door, and a key room on the other arc.
+- **Symmetry** (Asymmetric / Partly symmetric / Symmetric). There is a centre axis. Spine rooms sit on it with shapes made symmetric about their own centre line. Wing rooms come in mirrored pairs, with mirrored shapes, halls and door types; the right-hand room is grown and its reflection added. Extra links, carved halls, niches, furnishings and lakes are mirrored too. Partly symmetric breaks about 30% of pairs (one side only, or a different room on the other side) and occasionally adds a lone room. On test maps, floor symmetry is about 0.98 for Symmetric, 0.87 to 0.95 for Partly symmetric and about 0.5 for Asymmetric.
+- **Looping paths.** Two arcs of rooms grow from the entrance toward waypoints that bow out on either side of a line to a goal room. The arc ends are joined to the goal by carved halls. One or two minor cycles add a detour room off an arc, joined back to the next room on it, and the remaining rooms grow as branches. The main cycle is then gated: lock and key (50%: a locked door on one arc, the key in a room on the other), a secret door (25%), or two open routes (25%). The Scattered arrangement builds its main cycle as a ring through its outer rooms.
+- **Optional links never wander.** Detours and extra links are skipped when their carved hall would be longer than about twice the gap between the rooms. Carving avoids running alongside an existing hall without joining it.
+- **Connectivity repair runs for every arrangement:** any room the entrance can't reach is joined to its nearest connected rooms, or made rectangular and retried.
