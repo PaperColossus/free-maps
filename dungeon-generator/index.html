@@ -350,10 +350,22 @@ function inPoly(pts, px, py) {
   }
   return c;
 }
+function inRoom(r, px, py) { for (const p of r.poly) if (inPoly(p, px, py)) return true; return false; }
+// A room's floor as a list of polygons (overlapping parts merge when filled).
 function roomPoly(r) {
   const { x, y, w, h } = r, sh = r.shape || { type: "rect" };
+  if (sh.type === "bars") { // cross, T or offset cross: a full-width bar plus a full-height bar
+    const hb = sh.hb, vb = sh.vb;
+    return [orient([[x, y + hb.y], [x + w, y + hb.y], [x + w, y + hb.y + hb.h], [x, y + hb.y + hb.h]]),
+            orient([[x + vb.x, y], [x + vb.x + vb.w, y], [x + vb.x + vb.w, y + h], [x + vb.x, y + h]])];
+  }
   let pts;
-  if (sh.type === "chamfer") {
+  if (sh.type === "hex") { // flat sides on two opposite faces, points on the other two
+    const c = sh.c;
+    pts = sh.flat === "ns"
+      ? [[x + c, y], [x + w - c, y], [x + w, y + h / 2], [x + w - c, y + h], [x + c, y + h], [x, y + h / 2]]
+      : [[x + w / 2, y], [x + w, y + c], [x + w, y + h - c], [x + w / 2, y + h], [x, y + h - c], [x, y + c]];
+  } else if (sh.type === "chamfer") {
     const c = sh.c;
     pts = [[x + c, y], [x + w - c, y], [x + w, y + c], [x + w, y + h - c], [x + w - c, y + h], [x + c, y + h], [x, y + h - c], [x, y + c]];
   } else if (sh.type === "circle") {
@@ -376,11 +388,13 @@ function roomPoly(r) {
     else if (sh.corner === 2) pts = [[x, y], [x + w, y], [x + w, y + h - b], [x + w - a, y + h - b], [x + w - a, y + h], [x, y + h]];
     else pts = [[x, y], [x + w, y], [x + w, y + h], [x + a, y + h], [x + a, y + h - b], [x, y + h - b]];
   } else pts = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
-  return orient(pts);
+  return [orient(pts)];
 }
 // Where the label goes: the centre, or the middle of the wider arm of an ell.
 function roomLabel(r) {
   const sh = r.shape;
+  if (sh && sh.type === "bars") return [r.x + sh.vb.x + sh.vb.w / 2, r.y + sh.hb.y + sh.hb.h / 2];
+  if (sh && sh.pool) return [r.x + r.w / 2, r.y + r.h / 2 - sh.pool - 0.75];
   if (!sh || sh.type !== "ell") return [r.x + r.w / 2, r.y + r.h / 2];
   const top = sh.corner === 0 || sh.corner === 1, left = sh.corner === 0 || sh.corner === 3;
   const band = (r.h - sh.b) * r.w, col = (r.w - sh.a) * r.h; // full-width band vs full-height column
@@ -397,7 +411,7 @@ function doorOK(r, x, y, d) {
   if (ny < 0 && y !== r.y) return false;
   const ex = x + 0.5 + nx * 0.38, ey = y + 0.5 + ny * 0.38, tx = -ny, ty = nx;
   const offs = (nx !== 0 ? r.h : r.w) < 3 ? [0] : [-0.6, 0, 0.6];
-  for (const o of offs) if (!inPoly(r.poly, ex + tx * o, ey + ty * o)) return false;
+  for (const o of offs) if (!inRoom(r, ex + tx * o, ey + ty * o)) return false;
   return true;
 }
 function pickShape(rng, w, h, variety, first) {
@@ -406,10 +420,31 @@ function pickShape(rng, w, h, variety, first) {
   const opts = [];
   if (Math.max(w, h) >= 4) opts.push("circle");
   if (Math.min(w, h) >= 3) opts.push("apse");
-  if (Math.min(w, h) >= 4) opts.push("chamfer", "ell");
+  if (Math.min(w, h) >= 4) opts.push("chamfer", "ell", "hex");
+  if (Math.min(w, h) >= 5) opts.push("bars", "bars");
   if (!opts.length) return rect;
   const t = rng.pick(opts);
-  if (t === "circle") { let n = Math.max(w, h, 5); if (n % 2 === 0) n++; return [n, n, { type: "circle" }]; }
+  if (t === "circle") {
+    let n = Math.max(w, h, 5); if (n % 2 === 0) n++;
+    // big rotundas sometimes have a sunken pool in the middle (a "blocked centre")
+    const pool = n >= 7 && rng.chance(0.4) ? Math.max(1, Math.floor((n - 5) / 2)) : 0;
+    return [n, n, { type: "circle", pool }];
+  }
+  if (t === "hex") {
+    const flat = rng.chance(0.5) ? "ns" : "ew";
+    const across = flat === "ns" ? h : w; // the pointed direction's half-height sets the slant (~30 degrees)
+    return [w, h, { type: "hex", flat, c: Math.max(1, Math.min(Math.round(across / 2 * 0.58), Math.floor((flat === "ns" ? w : h) / 2) - 1)) }];
+  }
+  if (t === "bars") {
+    // a full-width bar and a full-height bar: centred makes a cross, at an edge a T, off-centre an offset cross
+    const vw = rng.int(Math.max(1, Math.round(w * 0.25)), Math.max(1, Math.round(w * 0.5)));
+    const hh = rng.int(Math.max(1, Math.round(h * 0.25)), Math.max(1, Math.round(h * 0.5)));
+    const kind = rng.pick(["cross", "cross", "tee", "offset"]);
+    let vx = Math.floor((w - vw) / 2), hy = Math.floor((h - hh) / 2);
+    if (kind === "tee") { if (rng.chance(0.5)) hy = rng.chance(0.5) ? 0 : h - hh; else vx = rng.chance(0.5) ? 0 : w - vw; }
+    if (kind === "offset") { vx = rng.int(1, Math.max(1, w - vw - 1)); hy = rng.int(1, Math.max(1, h - hh - 1)); }
+    return [w, h, { type: "bars", hb: { y: hy, h: hh }, vb: { x: vx, w: vw } }];
+  }
   if (t === "apse") {
     const side = rng.int(0, 3), horiz = side % 2 === 0;
     let along = horiz ? w : h, span = horiz ? h : w;
@@ -418,7 +453,11 @@ function pickShape(rng, w, h, variety, first) {
     along = rng.chance(0.35) ? Math.ceil(span / 2) : Math.max(along, Math.ceil(span / 2) + 1);
     return horiz ? [along, span, { type: "apse", side }] : [span, along, { type: "apse", side }];
   }
-  if (t === "chamfer") return [w, h, { type: "chamfer", c: Math.min(w, h) >= 7 && rng.chance(0.4) ? 2 : 1 }];
+  if (t === "chamfer") {
+    // corners cut back about 0.29 of the side gives a near-regular octagon; sometimes keep it mild
+    const reg = Math.max(1, Math.round(Math.min(w, h) * 0.29));
+    return [w, h, { type: "chamfer", c: rng.chance(0.6) ? reg : 1 }];
+  }
   return [w, h, { type: "ell", corner: rng.int(0, 3), a: rng.int(1, Math.floor(w / 2)), b: rng.int(1, Math.floor(h / 2)) }];
 }
 function nichePoly(n) {
@@ -462,7 +501,7 @@ function buildGeometry(map) {
   const { W, H, cells, rooms, doors, niches } = map;
   const byId = new Map(rooms.map(r => [r.id, r]));
   const polys = [];
-  for (const r of rooms) { r.poly = roomPoly(r); [r.lx, r.ly] = roomLabel(r); polys.push(r.poly); }
+  for (const r of rooms) { r.poly = roomPoly(r); [r.lx, r.ly] = roomLabel(r); polys.push(...r.poly); }
   for (let y = 0; y < H; y++) { let x = 0; while (x < W) { if (cells[y * W + x] === -1) { const s0 = x; while (x < W && cells[y * W + x] === -1) x++; polys.push(orient([[s0, y], [x, y], [x, y + 1], [s0, y + 1]])); } else x++; } }
   for (const d of doors) { // square off door mouths into shaped rooms
     const pair = d.o === "v" ? [[d.x - 1, d.y], [d.x, d.y]] : [[d.x, d.y - 1], [d.x, d.y]];
@@ -500,6 +539,14 @@ function generate(o) {
   const linkKey = (a, b) => a < b ? a + "-" + b : b + "-" + a;
   const hallP = o.layout === "shared" ? 0 : o.layout === "halls" ? 1 : o.layout === "mixed" ? o.mix : 1;
 
+  // Rooms between a and b along existing links (breadth-first).
+  function roomHops(a, b) {
+    const adj = new Map();
+    for (const k of links) { const [p, q] = k.split("-").map(Number); (adj.get(p) || adj.set(p, []).get(p)).push(q); (adj.get(q) || adj.set(q, []).get(q)).push(p); }
+    const seen = new Map([[a, 0]]), q = [a];
+    while (q.length) { const c = q.shift(); if (c === b) return seen.get(c); for (const n of adj.get(c) || []) if (!seen.has(n)) { seen.set(n, seen.get(c) + 1); q.push(n); } }
+    return Infinity;
+  }
   function setRoom(r) { for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) grid[I(x, y)] = r.id; }
   function doorType() {
     const p = rng.f();
@@ -669,7 +716,9 @@ function generate(o) {
         break;
       }
     }
-    const keys = rng.shuffle([...cand.keys()]);
+    // Like Brogue's loop rule: a new connection only goes where walking
+    // between the two rooms currently takes a detour of 3+ rooms.
+    const keys = rng.shuffle([...cand.keys()].filter(k => { const [a, b] = k.split("-").map(Number); return roomHops(a, b) >= 3; }));
     const want = Math.round(keys.length * o.loops);
     let made = 0;
     for (const k of keys) {
@@ -784,7 +833,7 @@ function generate(o) {
     for (const r of rooms) { x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y); x1 = Math.max(x1, r.x + r.w); y1 = Math.max(y1, r.y + r.h); }
     const bx0 = Math.max(2, x0 - 4), by0 = Math.max(2, y0 - 4), bw = Math.min(G - 2, x1 + 4) - bx0, bh = Math.min(G - 2, y1 + 4) - by0;
     for (const [i, j] of edges) carve(rooms[i], rooms[j], bx0, by0, bw, bh);
-    for (const [i, j] of extra) if (!links.has(linkKey(rooms[i].id, rooms[j].id))) carve(rooms[i], rooms[j], bx0, by0, bw, bh);
+    for (const [i, j] of extra) if (!links.has(linkKey(rooms[i].id, rooms[j].id)) && roomHops(rooms[i].id, rooms[j].id) >= 3) carve(rooms[i], rooms[j], bx0, by0, bw, bh);
   }
 
   /* ---------- Niches: recesses cut into straight stretches of wall ---------- */
@@ -861,7 +910,7 @@ function furnish(map, seed) {
   const touchesDoor = (x, y) => doorEdges.has("v" + x + "," + y) || doorEdges.has("v" + (x + 1) + "," + y) || doorEdges.has("h" + x + "," + y) || doorEdges.has("h" + x + "," + (y + 1));
   const feats = [];
   const used = new Set();
-  const inside = (r, px, py, m) => inPoly(r.poly, px - m, py - m) && inPoly(r.poly, px + m, py - m) && inPoly(r.poly, px + m, py + m) && inPoly(r.poly, px - m, py + m) && inPoly(r.poly, px, py);
+  const inside = (r, px, py, m) => inRoom(r, px - m, py - m) && inRoom(r, px + m, py - m) && inRoom(r, px + m, py + m) && inRoom(r, px - m, py + m) && inRoom(r, px, py);
   function stairsIn(r, down) {
     const opts = [];
     for (let d = 0; d < 4; d++) {
@@ -887,8 +936,9 @@ function furnish(map, seed) {
   if (deepest) stairsIn(deepest, true);
   for (const r of rooms) {
     const t = r.shape.type;
-    if (t === "circle" && r.w >= 7 && rng.chance(0.6)) {
-      const n = r.w >= 9 ? 8 : 6, R = r.w / 2 - 1.1, off = rng.chance(0.5) ? Math.PI / n : 0;
+    if (r.shape.pool) feats.push({ type: "pool", x: r.x + r.w / 2, y: r.y + r.h / 2, r: r.shape.pool });
+    if (t === "circle" && r.w >= 7 && rng.chance(r.shape.pool ? 0.85 : 0.6)) {
+      const n = r.w >= 9 ? 8 : 6, R = r.shape.pool ? (r.w / 2 + r.shape.pool) / 2 + 0.1 : r.w / 2 - 1.1, off = rng.chance(0.5) ? Math.PI / n : 0;
       for (let i = 0; i < n; i++) { const a = off + i / n * Math.PI * 2; feats.push({ type: "column", x: r.x + r.w / 2 + Math.cos(a) * R, y: r.y + r.h / 2 + Math.sin(a) * R }); }
     } else if ((t === "rect" || (t === "chamfer" && r.shape.c === 1)) && r.w >= 5 && r.h >= 5 && rng.chance(0.45)) {
       const along = r.w >= r.h ? "x" : "y";
@@ -1511,6 +1561,20 @@ function renderMap(canvas, map, st, S) {
           for (let a = 0; a < 5; a++) { const ang = a / 5 * Math.PI * 2 + rr.f(); const rad = r * rr.range(0.7, 1.2); const px = cx + Math.cos(ang) * rad, py = cy + Math.sin(ang) * rad; a ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
           ctx.closePath(); ctx.fill(); ctx.stroke();
         }
+      } else if (f.type === "pool") {
+        ctx.beginPath(); ctx.arc(f.x * S, f.y * S, f.r * S, 0, Math.PI * 2);
+        ctx.fillStyle = pal.floorAlt; ctx.fill();
+        ctx.save(); ctx.clip();
+        ctx.strokeStyle = pal.detail; ctx.lineWidth = Math.max(1, S * 0.025); ctx.beginPath();
+        for (let yy = -f.r + 0.2; yy < f.r; yy += 0.28) { // ripples
+          const xo = (Math.round(yy / 0.28) % 2) * 0.25;
+          for (let xx = -f.r + xo; xx < f.r; xx += 0.7) { ctx.moveTo((f.x + xx) * S, (f.y + yy) * S); ctx.quadraticCurveTo((f.x + xx + 0.12) * S, (f.y + yy - 0.07) * S, (f.x + xx + 0.24) * S, (f.y + yy) * S); }
+        }
+        ctx.stroke(); ctx.restore();
+        ctx.beginPath(); ctx.arc(f.x * S, f.y * S, f.r * S, 0, Math.PI * 2);
+        ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.06); ctx.stroke();
+        ctx.beginPath(); ctx.arc(f.x * S, f.y * S, (f.r + 0.14) * S, 0, Math.PI * 2);
+        ctx.lineWidth = Math.max(1, S * 0.025); ctx.stroke();
       } else if (f.type === "bust") {
         ctx.beginPath(); ctx.arc(f.x * S, f.y * S, S * 0.15, 0, Math.PI * 2);
         ctx.fillStyle = pal.floorAlt; ctx.fill(); ctx.lineWidth = Math.max(1, S * 0.035); ctx.strokeStyle = pal.ink; ctx.stroke();
