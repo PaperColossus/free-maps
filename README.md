@@ -10,6 +10,14 @@ Download them from the [Releases](https://github.com/PaperColossus/free-maps/rel
 | --- | --- | --- |
 | [Hedge Witch's Cabin](https://github.com/PaperColossus/free-maps/releases/tag/hedge-witchs-cabin) | 15 × 15 squares, 140 px per square, 300 DPI, gridless | Ground, Basement (day and night) |
 
+## Dungeon Sketcher (experimental)
+
+[`dungeon-generator/index.html`](dungeon-generator/index.html) is a browser-based dungeon map generator. Open the file in a browser; it needs no build step or server.
+
+- **Layout:** seed, number of rooms, room size range, extra loops, and door mix. Choose how rooms connect: rooms that share walls, rooms joined by halls, a mix of both, or scattered rooms with winding halls. Hall length and shape are adjustable.
+- **Look:** wall style (solid ink, sketchy, outlined, stone blocks, fine line), floor (plain, flagstones, planks, checker, cobbles), grid (lines, dots, none), surroundings (hatching, cross-hatch, stipple, solid rock, bare) and palette. Changing the look never changes the layout.
+- **Export:** PNG at 70 to 200 px per square.
+
 ## Terms of Use
 
 - Free for non-commercial use: run them in your own games, at home or online.

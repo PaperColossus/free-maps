@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dungeon Sketcher</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alegreya:wght@500;700&family=Alegreya+SC:wght@500;700&family=Alegreya+Sans:wght@400;500;700&display=swap">
+<style>
+/* Layout: one-screen tool. Control rail on the left, the map sheet fills the rest; stacks map-first on phones. */
+:root {
+  --bg: #e4e2dc;
+  --rail: #f4f3ef;
+  --fg: #1d2126;
+  --muted: #646a72;
+  --line: #d2cfc7;
+  --accent: #2b4c7e;
+  --accent-fg: #ffffff;
+  --sheet: #d9d6ce;
+  --font-display: "Alegreya SC", "Iowan Old Style", Georgia, serif;
+  --font-body: "Alegreya Sans", "Segoe UI", system-ui, sans-serif;
+  --font-num: "Alegreya", Georgia, serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131518; --rail: #1b1e22; --fg: #e6e3dc; --muted: #9aa0a8; --line: #2c3036;
+    --accent: #8fb0e6; --accent-fg: #0f1520; --sheet: #0e1013; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131518; --rail: #1b1e22; --fg: #e6e3dc; --muted: #9aa0a8; --line: #2c3036;
+  --accent: #8fb0e6; --accent-fg: #0f1520; --sheet: #0e1013; color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.4 var(--font-body);
+}
+.app {
+  height: 100%; display: grid; grid-template-columns: 320px minmax(0, 1fr);
+}
+.rail {
+  background: var(--rail); border-right: 1px solid var(--line);
+  overflow-y: auto; padding-block: 18px 28px;
+  padding-left: max(18px, env(safe-area-inset-left, 0px)); padding-right: 18px;
+  display: flex; flex-direction: column; gap: 18px;
+}
+.brand h1 {
+  font: 700 1.6rem/1.1 var(--font-display); margin: 0; letter-spacing: .01em; text-wrap: balance;
+}
+.brand p { margin: 4px 0 0; color: var(--muted); font-size: .9rem; }
+fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+legend {
+  font: 700 .72rem/1 var(--font-body); text-transform: uppercase; letter-spacing: .12em;
+  color: var(--muted); padding: 0 0 10px; width: 100%; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.row { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 10px; }
+.row > label, .row > .lbl { font-size: .9rem; }
+.row output { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .85rem; min-width: 3ch; text-align: right; }
+.slide { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.pair { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr) auto; gap: 6px; align-items: center; }
+input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+select, input[type="text"] {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: .9rem; color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+}
+.seed { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; }
+button {
+  font: 600 .9rem var(--font-body); border-radius: 6px; padding: 7px 12px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+}
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.checks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font-size: .9rem; }
+.checks label { display: flex; gap: 6px; align-items: center; }
+.checks input { accent-color: var(--accent); }
+.hint { color: var(--muted); font-size: .8rem; margin: 0; }
+.stage { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--sheet); }
+.stagebar {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between;
+  padding-block: 12px; padding-left: 20px; padding-right: max(20px, env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid var(--line); background: var(--rail);
+}
+.stagebar h2 { margin: 0; font: 700 1.15rem/1.2 var(--font-display); text-wrap: balance; }
+.stagebar .meta { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.mapwrap { flex: 1; min-height: 0; display: grid; place-items: center; padding: 18px; overflow: hidden; }
+#map { display: block; box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 8px 28px rgba(0,0,0,.12); }
+.overlay {
+  position: fixed; inset: 0; background: rgba(10,12,15,.72); display: grid; place-items: center; z-index: 20;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+}
+.overlay .card {
+  background: var(--rail); color: var(--fg); border-radius: 10px; padding: 16px; max-width: min(900px, 100%);
+  max-height: 100%; display: flex; flex-direction: column; gap: 12px; box-sizing: border-box;
+}
+.overlay img { max-width: 100%; max-height: 62vh; object-fit: contain; align-self: center; background: #fff; }
+.overlay .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+.overlay .actions a { text-decoration: none; }
+@media (max-width: 780px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto auto; height: auto; }
+  html, body { height: auto; }
+  .stage { order: -1; }
+  .mapwrap { flex: none; height: 62vh; padding: 10px; }
+  .rail { border-right: 0; border-top: 1px solid var(--line); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .stagebar { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail" aria-label="Dungeon settings">
+    <div class="brand">
+      <h1>Dungeon Sketcher</h1>
+      <p>Seeded dungeon maps you can restyle without changing the layout.</p>
+    </div>
+
+    <fieldset>
+      <legend>Layout</legend>
+      <div class="row"><label for="seed">Seed</label>
+        <div class="seed"><input id="seed" type="text" spellcheck="false" autocomplete="off"><button id="reroll" class="primary" type="button">New</button></div>
+      </div>
+      <div class="row"><label for="rooms">Rooms</label>
+        <div class="slide"><input id="rooms" type="range" min="3" max="60" value="14"><output for="rooms"></output></div>
+      </div>
+      <div class="row"><label for="layout">Arrangement</label>
+        <select id="layout">
+          <option value="shared">Rooms share walls</option>
+          <option value="halls">Rooms joined by halls</option>
+          <option value="mixed" selected>Mixed walls and halls</option>
+          <option value="scattered">Scattered, winding halls</option>
+        </select>
+      </div>
+      <div class="row" id="mixRow"><label for="mix">Halls vs walls</label>
+        <div class="slide"><input id="mix" type="range" min="0" max="100" value="50"><output for="mix"></output></div>
+      </div>
+      <div class="row" id="hallRow"><span class="lbl">Hall length</span>
+        <div class="pair">
+          <input id="hallMin" type="range" min="1" max="10" value="2" aria-label="Shortest hall"><output for="hallMin"></output>
+          <input id="hallMax" type="range" min="1" max="14" value="6" aria-label="Longest hall"><output for="hallMax"></output>
+        </div>
+      </div>
+      <div class="row" id="shapeRow"><label for="hallShape">Hall shape</label>
+        <select id="hallShape">
+          <option value="straight">Straight</option>
+          <option value="bent" selected>Some bends</option>
+          <option value="winding">Winding</option>
+        </select>
+      </div>
+      <div class="row"><span class="lbl">Room size</span>
+        <div class="pair">
+          <input id="minSize" type="range" min="2" max="10" value="3" aria-label="Smallest room side"><output for="minSize"></output>
+          <input id="maxSize" type="range" min="3" max="16" value="7" aria-label="Largest room side"><output for="maxSize"></output>
+        </div>
+      </div>
+      <div class="row"><label for="loops">Extra links</label>
+        <div class="slide"><input id="loops" type="range" min="0" max="100" value="25"><output for="loops"></output></div>
+      </div>
+      <div class="row"><label for="doors">Doors</label>
+        <select id="doors">
+          <option value="mixed" selected>Mixed</option>
+          <option value="plain">Plain doors</option>
+          <option value="open">Open archways</option>
+          <option value="secret">Secretive</option>
+        </select>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Look</legend>
+      <div class="row"><label for="preset">Preset</label>
+        <select id="preset">
+          <option value="sketch" selected>Ink sketch</option>
+          <option value="parchment">Parchment</option>
+          <option value="classic">Old-school blue</option>
+          <option value="blueprint">Blueprint</option>
+          <option value="lantern">Lantern light</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="row"><label for="walls">Walls</label>
+        <select id="walls">
+          <option value="ink">Solid ink</option>
+          <option value="sketchy">Sketchy strokes</option>
+          <option value="double">Outlined</option>
+          <option value="stone">Stone blocks</option>
+          <option value="fine">Fine line</option>
+        </select>
+      </div>
+      <div class="row"><label for="weight">Wall weight</label>
+        <div class="slide"><input id="weight" type="range" min="50" max="200" value="100" step="10"><output for="weight"></output></div>
+      </div>
+      <div class="row"><label for="floor">Floor</label>
+        <select id="floor">
+          <option value="plain">Plain</option>
+          <option value="flagstones">Flagstones</option>
+          <option value="planks">Planks</option>
+          <option value="checker">Checker tiles</option>
+          <option value="cobble">Cobbles</option>
+        </select>
+      </div>
+      <div class="row"><label for="grid">Grid</label>
+        <select id="grid">
+          <option value="lines">Lines</option>
+          <option value="dots">Dots</option>
+          <option value="none">None</option>
+        </select>
+      </div>
+      <div class="row"><label for="outside">Surroundings</label>
+        <select id="outside">
+          <option value="hatch">Hatching</option>
+          <option value="cross">Cross-hatch</option>
+          <option value="stipple">Stipple</option>
+          <option value="solid">Solid rock</option>
+          <option value="none">Bare paper</option>
+        </select>
+      </div>
+      <div class="row"><label for="depth">Hatch depth</label>
+        <div class="slide"><input id="depth" type="range" min="1" max="3" value="2"><output for="depth"></output></div>
+      </div>
+      <div class="row"><label for="palette">Palette</label>
+        <select id="palette">
+          <option value="paper">Paper</option>
+          <option value="parchment">Parchment</option>
+          <option value="classic">Old-school blue</option>
+          <option value="blueprint">Blueprint</option>
+          <option value="lantern">Lantern</option>
+        </select>
+      </div>
+      <div class="checks">
+        <label><input id="shadow" type="checkbox" checked> Wall shadow</label>
+        <label><input id="numbers" type="checkbox" checked> Room numbers</label>
+        <label><input id="decor" type="checkbox" checked> Furnishings</label>
+        <label><input id="showTitle" type="checkbox" checked> Title</label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Export</legend>
+      <div class="row"><label for="ppi">Pixels / square</label>
+        <select id="ppi">
+          <option value="70">70 px</option>
+          <option value="100">100 px</option>
+          <option value="140" selected>140 px</option>
+          <option value="200">200 px</option>
+        </select>
+      </div>
+      <button id="export" class="primary" type="button">Export PNG</button>
+      <p class="hint">One grid square is 5 ft. The same seed and layout settings always give the same dungeon.</p>
+    </fieldset>
+  </aside>
+
+  <main class="stage">
+    <div class="stagebar">
+      <h2 id="dname">&nbsp;</h2>
+      <span class="meta" id="dmeta"></span>
+    </div>
+    <div class="mapwrap" id="mapwrap"><canvas id="map" aria-label="Generated dungeon map" role="img"></canvas></div>
+  </main>
+</div>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="card" role="dialog" aria-label="Exported map">
+    <img id="exportImg" alt="Exported dungeon map">
+    <div class="actions">
+      <span class="hint" id="exportInfo"></span>
+      <a id="exportLink" download="dungeon.png"><button type="button" class="primary" tabindex="-1">Download</button></a>
+      <button type="button" id="closeOverlay">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ================================================================
+   Seeded random numbers
+   ================================================================ */
+function xmur3(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) { h = Math.imul(h ^ str.charCodeAt(i), 3432918353); h = h << 13 | h >>> 19; }
+  return function () { h = Math.imul(h ^ (h >>> 16), 2246822507); h = Math.imul(h ^ (h >>> 13), 3266489909); return (h ^= h >>> 16) >>> 0; };
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = t + Math.imul(t ^ (t >>> 7), 61 | t) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function RNG(seed) {
+  const f = mulberry32(xmur3(String(seed))());
+  return {
+    f,
+    int: (a, b) => a + Math.floor(f() * (b - a + 1)),
+    range: (a, b) => a + f() * (b - a),
+    pick: arr => arr[Math.floor(f() * arr.length)],
+    chance: p => f() < p,
+    shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(f() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
+  };
+}
+
+const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]]; // E S W N
+
+/* ================================================================
+   Generator
+   Grid values: 0 empty, -1 hall, n>0 room id n.
+   Doors live on cell edges: 'v' edge at x between columns x-1 and x;
+   'h' edge at y between rows y-1 and y.
+   ================================================================ */
+const G = 260;
+
+function generate(o) {
+  const rng = RNG(o.seed + "|layout");
+  const grid = new Int16Array(G * G);
+  const I = (x, y) => y * G + x;
+  const get = (x, y) => (x < 2 || y < 2 || x >= G - 2 || y >= G - 2) ? -999 : grid[I(x, y)];
+  const rooms = [];
+  const doors = new Map();
+  const links = new Set();
+  const linkKey = (a, b) => a < b ? a + "-" + b : b + "-" + a;
+  const hallP = o.layout === "shared" ? 0 : o.layout === "halls" ? 1 : o.layout === "mixed" ? o.mix : 1;
+
+  function setRoom(r) { for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) grid[I(x, y)] = r.id; }
+  function doorType() {
+    const p = rng.f();
+    if (o.doors === "plain") return p < 0.9 ? "door" : "locked";
+    if (o.doors === "open") return p < 0.85 ? "arch" : p < 0.95 ? "door" : "bars";
+    if (o.doors === "secret") return p < 0.3 ? "secret" : p < 0.65 ? "door" : p < 0.8 ? "locked" : "arch";
+    return p < 0.52 ? "door" : p < 0.78 ? "arch" : p < 0.87 ? "locked" : p < 0.94 ? "secret" : "bars";
+  }
+  function edgeKey(x1, y1, x2, y2) {
+    if (x1 !== x2) return "v" + Math.max(x1, x2) + "," + y1;
+    return "h" + x1 + "," + Math.max(y1, y2);
+  }
+  function addDoor(x1, y1, x2, y2, type) {
+    const k = edgeKey(x1, y1, x2, y2);
+    const d = x1 !== x2 ? { o: "v", x: Math.max(x1, x2), y: y1 } : { o: "h", x: x1, y: Math.max(y1, y2) };
+    d.type = type || doorType();
+    doors.set(k, d);
+  }
+  function roomSize() {
+    let w = rng.int(o.minSize, o.maxSize), h = rng.int(o.minSize, o.maxSize);
+    if (w > h * 2.4) w = Math.ceil(h * 2.4);
+    if (h > w * 2.4) h = Math.ceil(w * 2.4);
+    return [w, h];
+  }
+  // Cells along side d of room r, skipping corners when the side is long enough.
+  function sideCells(r, d) {
+    const [dx, dy] = DIRS[d]; const out = [];
+    if (dx !== 0) {
+      const x = dx > 0 ? r.x + r.w - 1 : r.x;
+      const y0 = r.h >= 3 ? r.y + 1 : r.y, y1 = r.h >= 3 ? r.y + r.h - 2 : r.y + r.h - 1;
+      for (let y = y0; y <= y1; y++) out.push([x, y]);
+    } else {
+      const y = dy > 0 ? r.y + r.h - 1 : r.y;
+      const x0 = r.w >= 3 ? r.x + 1 : r.x, x1 = r.w >= 3 ? r.x + r.w - 2 : r.x + r.w - 1;
+      for (let x = x0; x <= x1; x++) out.push([x, y]);
+    }
+    return out;
+  }
+  // Is (x,y) a valid non-corner cell of room r when entered moving in direction d?
+  function entryOK(r, x, y, d) {
+    const [dx] = DIRS[d];
+    if (dx !== 0) return r.h < 3 || (y > r.y && y < r.y + r.h - 1);
+    return r.w < 3 || (x > r.x && x < r.x + r.w - 1);
+  }
+  // Room rectangle whose near side contains (ex,ey), growing in direction d.
+  function rectFor(ex, ey, d, w, h) {
+    const span = DIRS[d][0] !== 0 ? h : w;
+    const off = span >= 3 ? rng.int(1, span - 2) : rng.int(0, span - 1);
+    if (d === 0) return { x: ex, y: ey - off, w, h };
+    if (d === 2) return { x: ex - w + 1, y: ey - off, w, h };
+    if (d === 1) return { x: ex - off, y: ey, w, h };
+    return { x: ex - off, y: ey - h + 1, w, h };
+  }
+  function rectFree(r, clear, allow) {
+    for (let y = r.y - clear; y < r.y + r.h + clear; y++) for (let x = r.x - clear; x < r.x + r.w + clear; x++) {
+      const v = get(x, y);
+      if (v === -999) return false;
+      const inside = x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+      if (inside) { if (v !== 0) return false; }
+      else if (v !== 0 && !(allow && allow.has(I(x, y)))) return false;
+    }
+    return true;
+  }
+  function contact(r) { // how many perimeter cells touch existing floor
+    let c = 0;
+    for (let x = r.x; x < r.x + r.w; x++) { if (get(x, r.y - 1) > 0) c++; if (get(x, r.y + r.h) > 0) c++; }
+    for (let y = r.y; y < r.y + r.h; y++) { if (get(r.x - 1, y) > 0) c++; if (get(r.x + r.w, y) > 0) c++; }
+    return c;
+  }
+  function buildHall(sx, sy, d) {
+    const total = rng.int(o.hallMin, Math.max(o.hallMin, o.hallMax));
+    let segs = 1;
+    if (o.hallShape === "bent" && total >= 3 && rng.chance(0.55)) segs = 2;
+    if (o.hallShape === "winding" && total >= 3) segs = total >= 5 ? rng.int(2, 3) : 2;
+    const lens = []; let rem = total;
+    for (let i = 0; i < segs; i++) {
+      const left = segs - i - 1;
+      const lo = i === 0 && segs > 1 && rem - left >= 2 ? 2 : 1;
+      const L = i === segs - 1 ? rem : rng.int(lo, rem - left);
+      lens.push(L); rem -= L;
+    }
+    let x = sx, y = sy, dir = d; const cells = [];
+    for (let i = 0; i < segs; i++) {
+      if (i > 0) {
+        const opts = [(dir + 1) % 4, (dir + 3) % 4].filter(nd => nd !== (d + 2) % 4);
+        dir = rng.pick(opts);
+      }
+      for (let k = 0; k < lens[i]; k++) { x += DIRS[dir][0]; y += DIRS[dir][1]; cells.push([x, y]); }
+    }
+    return { cells, fd: dir };
+  }
+  function hallOK(cells) {
+    const set = new Set(cells.map(c => I(c[0], c[1])));
+    for (const [x, y] of cells) {
+      if (get(x, y) !== 0) return false;
+      for (const [dx, dy] of DIRS) {
+        const nx = x + dx, ny = y + dy;
+        if (set.has(I(nx, ny))) continue;
+        if (get(nx, ny) === -1) return false;
+      }
+    }
+    return true;
+  }
+
+  /* ---------- Growth: rooms attach to rooms, flush or via a hall ---------- */
+  function grow() {
+    const [w0, h0] = roomSize();
+    const r0 = { id: 1, x: (G >> 1) - (w0 >> 1), y: (G >> 1) - (h0 >> 1), w: w0, h: h0 };
+    rooms.push(r0); setRoom(r0);
+    const deg = [0, 0];
+    let guard = 0;
+    while (rooms.length < o.rooms && guard < o.rooms * 30) {
+      guard++;
+      let cx = 0, cy = 0;
+      for (const r of rooms) { cx += r.x + r.w / 2; cy += r.y + r.h / 2; }
+      cx /= rooms.length; cy /= rooms.length;
+      let best = null;
+      // decide flush-or-hall once per room, so scoring can't favour one kind
+      const hall = rng.chance(hallP);
+      for (let attempt = 0, found = 0; attempt < 80 && found < 8; attempt++) {
+        // parent: favour rooms with few links, so the plan branches
+        let tw = 0; const ws = rooms.map(r => { const w = 1 / (1 + deg[r.id] * deg[r.id]); tw += w; return w; });
+        let pick = rng.f() * tw, p = rooms[0];
+        for (let i = 0; i < rooms.length; i++) { pick -= ws[i]; if (pick <= 0) { p = rooms[i]; break; } }
+        const d = rng.int(0, 3);
+        const side = sideCells(p, d);
+        if (!side.length) continue;
+        const [sx, sy] = rng.pick(side);
+        let cells = [], fd = d;
+        if (hall) { const h = buildHall(sx, sy, d); cells = h.cells; fd = h.fd; if (!hallOK(cells)) continue; }
+        const last = cells.length ? cells[cells.length - 1] : [sx, sy];
+        const ex = last[0] + DIRS[fd][0], ey = last[1] + DIRS[fd][1];
+        const [w, h] = roomSize();
+        const r = rectFor(ex, ey, fd, w, h);
+        const allow = new Set(cells.map(c => I(c[0], c[1])));
+        if (!rectFree(r, hall ? 1 : 0, allow)) continue;
+        found++;
+        const rcx = r.x + r.w / 2, rcy = r.y + r.h / 2;
+        const dist = Math.hypot(rcx - cx, rcy - cy);
+        const score = (hall ? 0 : contact(r) * 0.6) - dist * 0.25 + rng.range(0, 4);
+        if (!best || score > best.score) best = { score, r, cells, p, sx, sy, ex, ey, last, hall };
+      }
+      if (!best) continue;
+      const { r, cells, p, sx, sy, ex, ey, last } = best;
+      r.id = rooms.length + 1; rooms.push(r); setRoom(r); deg[r.id] = 0;
+      for (const [x, y] of cells) grid[I(x, y)] = -1;
+      if (hall) { addDoor(sx, sy, cells[0][0], cells[0][1]); addDoor(last[0], last[1], ex, ey); }
+      else addDoor(sx, sy, ex, ey);
+      links.add(linkKey(p.id, r.id)); deg[p.id]++; deg[r.id]++;
+    }
+  }
+
+  /* ---------- Extra links: straight rays between facing rooms ---------- */
+  function addLoops() {
+    if (o.loops <= 0) return;
+    const maxLen = hallP > 0 ? Math.max(o.hallMax, 2) : 0;
+    const cand = new Map();
+    for (const r of rooms) for (let d = 0; d < 4; d++) for (const [sx, sy] of sideCells(r, d)) {
+      const [dx, dy] = DIRS[d];
+      for (let t = 1; t <= maxLen + 1; t++) {
+        const x = sx + dx * t, y = sy + dy * t, v = get(x, y);
+        if (v === 0) continue;
+        if (v > 0 && v !== r.id) {
+          const b = rooms[v - 1];
+          if (entryOK(b, x, y, d) && !doors.has(edgeKey(sx, sy, sx + dx, sy + dy))) {
+            const k = linkKey(r.id, v);
+            if (!links.has(k)) { if (!cand.has(k)) cand.set(k, []); cand.get(k).push({ sx, sy, d, len: t - 1 }); }
+          }
+        }
+        break;
+      }
+    }
+    const keys = rng.shuffle([...cand.keys()]);
+    const want = Math.round(keys.length * o.loops);
+    let made = 0;
+    for (const k of keys) {
+      if (made >= want) break;
+      const options = rng.shuffle(cand.get(k));
+      for (const c of options) {
+        const [dx, dy] = DIRS[c.d];
+        const cells = [];
+        for (let t = 1; t <= c.len; t++) cells.push([c.sx + dx * t, c.sy + dy * t]);
+        if (cells.length && !hallOK(cells)) continue;
+        for (const [x, y] of cells) grid[I(x, y)] = -1;
+        const end = cells.length ? cells[cells.length - 1] : [c.sx, c.sy];
+        if (cells.length) { addDoor(c.sx, c.sy, cells[0][0], cells[0][1]); addDoor(end[0], end[1], end[0] + dx, end[1] + dy); }
+        else addDoor(c.sx, c.sy, c.sx + dx, c.sy + dy);
+        links.add(k); made++;
+        break;
+      }
+    }
+  }
+
+  /* ---------- Scattered rooms joined by A* halls ---------- */
+  function carve(a, b, bx0, by0, bw, bh) {
+    const n = bw * bh * 4;
+    const gcost = new Float32Array(n).fill(Infinity);
+    const prev = new Int32Array(n).fill(-1);
+    const heap = []; // [f, state]
+    const push = (f, s) => { heap.push([f, s]); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = i * 2 + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+    const S = (x, y, d) => (((y - by0) * bw + (x - bx0)) << 2) | d;
+    const inB = (x, y) => x >= bx0 && y >= by0 && x < bx0 + bw && y < by0 + bh;
+    const hdist = (x, y) => Math.max(b.x - x, 0, x - (b.x + b.w - 1)) + Math.max(b.y - y, 0, y - (b.y + b.h - 1));
+    const nearOther = (x, y) => {
+      for (let yy = y - 1; yy <= y + 1; yy++) for (let xx = x - 1; xx <= x + 1; xx++) { const v = get(xx, yy); if (v > 0 && v !== a.id && v !== b.id) return true; }
+      return false;
+    };
+    const stepCost = (x, y, v) => (v === -1 ? 0.35 : 1) + (v === 0 && nearOther(x, y) ? 2 : 0);
+    for (let d = 0; d < 4; d++) for (const [sx, sy] of sideCells(a, d)) {
+      const nx = sx + DIRS[d][0], ny = sy + DIRS[d][1], v = get(nx, ny);
+      if ((v === 0 || v === -1) && inB(nx, ny)) {
+        const s = S(nx, ny, d), c = stepCost(nx, ny, v);
+        if (c < gcost[s]) { gcost[s] = c; push(c + hdist(nx, ny), s); }
+      }
+    }
+    let goal = -1, goalCell = null;
+    while (heap.length) {
+      const [f, s] = pop();
+      const d = s & 3, ci = s >> 2, x = bx0 + ci % bw, y = by0 + Math.floor(ci / bw);
+      if (f - hdist(x, y) > gcost[s] + 1e-6) continue;
+      for (let nd = 0; nd < 4; nd++) {
+        if (nd === (d + 2) % 4) continue;
+        const nx = x + DIRS[nd][0], ny = y + DIRS[nd][1];
+        if (!inB(nx, ny)) continue;
+        const v = get(nx, ny);
+        if (v === b.id) { if (entryOK(b, nx, ny, nd)) { goal = s; goalCell = [nx, ny]; break; } continue; }
+        if (v !== 0 && v !== -1) continue;
+        const ns = S(nx, ny, nd);
+        const g = gcost[s] + stepCost(nx, ny, v) + (nd !== d ? 0.7 : 0);
+        if (g < gcost[ns]) { gcost[ns] = g; prev[ns] = s; push(g + hdist(nx, ny), ns); }
+      }
+      if (goal >= 0) break;
+    }
+    if (goal < 0) return false;
+    const path = [];
+    for (let s = goal; s >= 0; s = prev[s]) { const ci = s >> 2; path.push([bx0 + ci % bw, by0 + Math.floor(ci / bw), s & 3]); }
+    path.reverse();
+    for (const [x, y] of path) if (grid[I(x, y)] === 0) grid[I(x, y)] = -1;
+    const [fx, fy, fd] = path[0];
+    addDoor(fx - DIRS[fd][0], fy - DIRS[fd][1], fx, fy);
+    const lastC = path[path.length - 1];
+    addDoor(lastC[0], lastC[1], goalCell[0], goalCell[1]);
+    links.add(linkKey(a.id, b.id));
+    return true;
+  }
+  function scatter() {
+    const sizes = []; for (let i = 0; i < o.rooms; i++) sizes.push(roomSize());
+    let area = 0; for (const [w, h] of sizes) area += (w + 3) * (h + 3);
+    let side = Math.ceil(Math.sqrt(area * 1.5));
+    for (let pass = 0; pass < 40; pass++) {
+      grid.fill(0); rooms.length = 0;
+      let ok = true;
+      const c0 = (G >> 1) - (side >> 1);
+      for (const [w, h] of sizes) {
+        let placed = false;
+        for (let t = 0; t < 250 && !placed; t++) {
+          const r = { x: c0 + rng.int(0, Math.max(0, side - w)), y: c0 + rng.int(0, Math.max(0, side - h)), w, h };
+          if (rectFree(r, 2)) { r.id = rooms.length + 1; rooms.push(r); setRoom(r); placed = true; }
+        }
+        if (!placed) { ok = false; break; }
+      }
+      if (ok) break;
+      side += 3;
+    }
+    // minimum spanning tree over room centres, then a few extra nearest-neighbour links
+    const cx = r => r.x + r.w / 2, cy = r => r.y + r.h / 2;
+    const dist = (a, b) => Math.hypot(cx(a) - cx(b), cy(a) - cy(b));
+    const inTree = new Set([0]); const edges = [];
+    while (inTree.size < rooms.length) {
+      let best = null;
+      for (const i of inTree) for (let j = 0; j < rooms.length; j++) if (!inTree.has(j)) {
+        const dd = dist(rooms[i], rooms[j]);
+        if (!best || dd < best[2]) best = [i, j, dd];
+      }
+      inTree.add(best[1]); edges.push(best);
+    }
+    const extra = [];
+    for (let i = 0; i < rooms.length; i++) {
+      const near = rooms.map((r, j) => [j, dist(rooms[i], r)]).filter(([j]) => j !== i).sort((p, q) => p[1] - q[1]).slice(0, 3);
+      for (const [j] of near) if (rng.chance(o.loops * 0.45)) extra.push([i, j]);
+    }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const r of rooms) { x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y); x1 = Math.max(x1, r.x + r.w); y1 = Math.max(y1, r.y + r.h); }
+    const bx0 = Math.max(2, x0 - 4), by0 = Math.max(2, y0 - 4), bw = Math.min(G - 2, x1 + 4) - bx0, bh = Math.min(G - 2, y1 + 4) - by0;
+    for (const [i, j] of edges) carve(rooms[i], rooms[j], bx0, by0, bw, bh);
+    for (const [i, j] of extra) if (!links.has(linkKey(rooms[i].id, rooms[j].id))) carve(rooms[i], rooms[j], bx0, by0, bw, bh);
+  }
+
+  if (o.layout === "scattered") scatter(); else { grow(); addLoops(); }
+
+  /* ---------- Number rooms in walking order from the entrance ---------- */
+  const adj = rooms.map(() => []);
+  for (const k of links) { const [a, b] = k.split("-").map(Number); adj[a - 1].push(b - 1); adj[b - 1].push(a - 1); }
+  const depth = rooms.map(() => -1); const order = [];
+  if (rooms.length) {
+    depth[0] = 0; const q = [0];
+    while (q.length) { const i = q.shift(); order.push(i); for (const j of adj[i].sort((a, b) => a - b)) if (depth[j] < 0) { depth[j] = depth[i] + 1; q.push(j); } }
+    rooms.forEach((r, i) => { if (depth[i] < 0) { depth[i] = 0; order.push(i); } });
+  }
+  order.forEach((i, n) => { rooms[i].num = n + 1; rooms[i].depth = depth[i]; });
+
+  /* ---------- Crop ---------- */
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) if (grid[I(x, y)] !== 0) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  const M = 4;
+  const ox = x0 - M, oy = y0 - M, W = x1 - x0 + 1 + M * 2, H = y1 - y0 + 1 + M * 2;
+  const cells = new Int16Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) cells[y * W + x] = grid[I(x + ox, y + oy)];
+  const outRooms = rooms.map(r => ({ id: r.id, num: r.num, depth: r.depth, x: r.x - ox, y: r.y - oy, w: r.w, h: r.h }));
+  const outDoors = [...doors.values()].map(d => ({ o: d.o, x: d.x - ox, y: d.y - oy, type: d.type }));
+  const map = { W, H, cells, rooms: outRooms, doors: outDoors, seed: o.seed };
+  map.features = furnish(map, o.seed);
+  map.title = dungeonName(o.seed);
+  return map;
+}
+
+/* ================================================================
+   Furnishings: stairs, columns, rubble. Seeded separately so they
+   don't disturb the layout.
+   ================================================================ */
+function furnish(map, seed) {
+  const rng = RNG(seed + "|decor");
+  const { W, cells, rooms, doors } = map;
+  const at = (x, y) => cells[y * W + x];
+  const doorEdges = new Set(doors.map(d => d.o + d.x + "," + d.y));
+  const touchesDoor = (x, y) => doorEdges.has("v" + x + "," + y) || doorEdges.has("v" + (x + 1) + "," + y) || doorEdges.has("h" + x + "," + y) || doorEdges.has("h" + x + "," + (y + 1));
+  const feats = [];
+  const used = new Set();
+  function stairsIn(r, down) {
+    const opts = [];
+    for (let d = 0; d < 4; d++) {
+      const [dx, dy] = DIRS[d];
+      for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx >= r.x && nx < r.x + r.w && ny >= r.y && ny < r.y + r.h) continue; // not against this wall
+        if (at(nx, ny) !== 0) continue; // must face solid rock
+        if (touchesDoor(x, y) || used.has(x + "," + y)) continue;
+        const cxr = r.x + (r.w - 1) / 2, cyr = r.y + (r.h - 1) / 2;
+        if (Math.abs(x - cxr) < 0.6 && Math.abs(y - cyr) < 0.6) continue; // keep the label spot clear
+        opts.push([x, y, d]);
+      }
+    }
+    if (!opts.length) return;
+    const [x, y, d] = rng.pick(opts);
+    used.add(x + "," + y);
+    feats.push({ type: "stairs", x, y, d, down });
+  }
+  const first = rooms.find(r => r.num === 1);
+  if (first) stairsIn(first, false);
+  const deepest = rooms.filter(r => r.num !== 1).sort((a, b) => b.depth - a.depth || b.num - a.num)[0];
+  if (deepest) stairsIn(deepest, true);
+  for (const r of rooms) {
+    if (r.w >= 5 && r.h >= 5 && rng.chance(0.45)) {
+      const along = r.w >= r.h ? "x" : "y";
+      const len = along === "x" ? r.w : r.h;
+      const count = Math.max(2, Math.floor((len - 2) / 2) + 1);
+      for (let i = 0; i < count; i++) {
+        const t = 1 + (len - 2) * (count === 1 ? 0.5 : i / (count - 1));
+        if (along === "x") { feats.push({ type: "column", x: r.x + t, y: r.y + 1 }); feats.push({ type: "column", x: r.x + t, y: r.y + r.h - 1 }); }
+        else { feats.push({ type: "column", x: r.x + 1, y: r.y + t }); feats.push({ type: "column", x: r.x + r.w - 1, y: r.y + t }); }
+      }
+    } else if (r.w >= 3 && r.h >= 3 && rng.chance(0.18)) {
+      // a statue or well tucked into a corner
+      const cx = rng.chance(0.5) ? r.x + 0.5 : r.x + r.w - 0.5, cy = rng.chance(0.5) ? r.y + 0.5 : r.y + r.h - 0.5;
+      const k = Math.floor(cx) + "," + Math.floor(cy);
+      if (!used.has(k) && !touchesDoor(Math.floor(cx), Math.floor(cy))) { used.add(k); feats.push({ type: rng.chance(0.5) ? "statue" : "well", x: cx, y: cy }); }
+    }
+    if (rng.chance(0.3)) {
+      const n = rng.int(1, 3);
+      for (let i = 0; i < n; i++) feats.push({ type: "rubble", x: r.x + rng.range(0.2, r.w - 0.2), y: r.y + rng.range(0.2, r.h - 0.2), s: rng.f() });
+    }
+  }
+  // a little debris in the halls
+  for (let i = 0; i < cells.length; i++) if (cells[i] === -1 && rng.chance(0.04)) {
+    feats.push({ type: "rubble", x: (i % W) + rng.range(0.2, 0.8), y: Math.floor(i / W) + rng.range(0.2, 0.8), s: rng.f() });
+  }
+  return feats;
+}
+
+function dungeonName(seed) {
+  const rng = RNG(seed + "|name");
+  const place = ["Crypt", "Vaults", "Halls", "Undercroft", "Warrens", "Catacombs", "Cellars", "Barrows", "Cisterns", "Sepulchre", "Delve", "Mines", "Oubliette", "Reliquary", "Labyrinth"];
+  const adj = ["Ashen", "Drowned", "Hollow", "Silent", "Gilded", "Weeping", "Forgotten", "Sunken", "Crimson", "Pale", "Shattered", "Mouldering", "Starless", "Iron", "Bitter"];
+  const noun = ["King", "Moth", "Abbot", "Serpent", "Lantern", "Widow", "Choir", "Tide", "Bell", "Hound", "Archivist", "Thorn", "Oath", "Saint", "Jackal"];
+  const names = ["Varro", "Ilsabet", "Grimwold", "Oszkar", "Thessaly", "Morven", "Quillon", "Ebbe", "Hathra", "Corwen"];
+  switch (rng.int(0, 3)) {
+    case 0: return "The " + rng.pick(place) + " of the " + rng.pick(adj) + " " + rng.pick(noun);
+    case 1: return "The " + rng.pick(adj) + " " + rng.pick(place);
+    case 2: return rng.pick(names) + "'s " + rng.pick(place);
+    default: return rng.pick(place) + " of the " + rng.pick(noun);
+  }
+}
+
+/* ================================================================
+   Styles
+   ================================================================ */
+const PALETTES = {
+  paper:     { bg: "#ece8de", floor: "#fdfcf8", floorAlt: "#efece4", ink: "#24211d", grid: "rgba(36,33,29,.16)", shadow: "rgba(36,33,29,.13)", rock: "#cbc4b4", wallFill: "#a39d90", detail: "rgba(36,33,29,.38)" },
+  parchment: { bg: "#dcc79b", floor: "#f2e5c4", floorAlt: "#e7d6ac", ink: "#3a2714", grid: "rgba(58,39,20,.2)", shadow: "rgba(58,39,20,.15)", rock: "#b0925c", wallFill: "#8b6c41", detail: "rgba(58,39,20,.42)" },
+  classic:   { bg: "#6d9bd0", floor: "#ffffff", floorAlt: "#e8f0fa", ink: "#2b5f9e", grid: "rgba(43,95,158,.38)", shadow: "rgba(43,95,158,.10)", rock: "#6d9bd0", wallFill: "#2b5f9e", detail: "rgba(43,95,158,.55)" },
+  blueprint: { bg: "#1c3d6b", floor: "#234d86", floorAlt: "#28558f", ink: "#e8f0ff", grid: "rgba(232,240,255,.2)", shadow: "rgba(6,16,32,.25)", rock: "#173459", wallFill: "#9ab7e0", detail: "rgba(232,240,255,.45)" },
+  lantern:   { bg: "#16171b", floor: "#2c2a27", floorAlt: "#34312d", ink: "#e6dcc6", grid: "rgba(230,220,198,.11)", shadow: "rgba(0,0,0,.4)", rock: "#1f2024", wallFill: "#6f685c", detail: "rgba(230,220,198,.35)" }
+};
+const PRESETS = {
+  sketch:    { walls: "ink", floor: "plain", grid: "lines", outside: "hatch", palette: "paper", depth: 2, weight: 100, shadow: true },
+  parchment: { walls: "sketchy", floor: "flagstones", grid: "lines", outside: "hatch", palette: "parchment", depth: 2, weight: 100, shadow: true },
+  classic:   { walls: "fine", floor: "plain", grid: "lines", outside: "solid", palette: "classic", depth: 1, weight: 120, shadow: false },
+  blueprint: { walls: "double", floor: "plain", grid: "lines", outside: "cross", palette: "blueprint", depth: 2, weight: 90, shadow: false },
+  lantern:   { walls: "stone", floor: "cobble", grid: "dots", outside: "stipple", palette: "lantern", depth: 3, weight: 100, shadow: true }
+};
+
+/* ================================================================
+   Renderer
+   ================================================================ */
+let noiseCanvas = null;
+function noisePattern(ctx) {
+  if (!noiseCanvas) {
+    noiseCanvas = document.createElement("canvas"); noiseCanvas.width = noiseCanvas.height = 192;
+    const n = noiseCanvas.getContext("2d"); const img = n.createImageData(192, 192); const r = RNG("paper-grain");
+    for (let i = 0; i < img.data.length; i += 4) { const v = r.f() < 0.5 ? 0 : 255; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = Math.floor(r.f() * 14); }
+    n.putImageData(img, 0, 0);
+  }
+  return ctx.createPattern(noiseCanvas, "repeat");
+}
+
+function renderMap(canvas, map, st, S) {
+  const pal = PALETTES[st.palette];
+  const rr = RNG(map.seed + "|ink");
+  const { W, H, cells } = map;
+  const titleRows = st.title ? 3 : 0;
+  canvas.width = Math.round(W * S); canvas.height = Math.round((H + titleRows) * S);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.lineJoin = "miter";
+  const at = (x, y) => (x < 0 || y < 0 || x >= W || y >= H) ? 0 : cells[y * W + x];
+  const isFloor = (x, y) => at(x, y) !== 0;
+  const j = a => rr.range(-a, a) * S;
+
+  // paper
+  ctx.fillStyle = st.outside === "solid" ? pal.rock : pal.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (st.title) {
+    ctx.fillStyle = st.outside === "solid" ? pal.floor : pal.ink;
+    ctx.font = `700 ${S * 1.25}px "Alegreya SC", Georgia, serif`;
+    ctx.textBaseline = "middle"; ctx.textAlign = "left";
+    ctx.fillText(map.title, S * 1.2, S * 1.9);
+    ctx.translate(0, titleRows * S);
+  }
+
+  // distance (in squares) from the nearest floor, for hatching bands
+  const dist = new Int8Array(W * H).fill(99);
+  const q = [];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (isFloor(x, y)) { dist[y * W + x] = 0; q.push(y * W + x); }
+  for (let qi = 0; qi < q.length; qi++) {
+    const i = q[qi], x = i % W, y = (i / W) | 0, d = dist[i];
+    if (d >= 4) continue;
+    for (let yy = y - 1; yy <= y + 1; yy++) for (let xx = x - 1; xx <= x + 1; xx++) {
+      if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+      const k = yy * W + xx;
+      if (dist[k] > d + 1) { dist[k] = d + 1; q.push(k); }
+    }
+  }
+
+  const floorPath = new Path2D();
+  for (let y = 0; y < H; y++) { let x = 0; while (x < W) { if (isFloor(x, y)) { const s = x; while (x < W && isFloor(x, y)) x++; floorPath.rect(s * S, y * S, (x - s) * S, S); } else x++; } }
+  const bandPath = new Path2D();
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const d = dist[y * W + x]; if (d > 0 && d <= st.depth) bandPath.rect(x * S, y * S, S, S); }
+
+  // ---- surroundings ----
+  ctx.lineCap = "round";
+  if (st.outside === "hatch") {
+    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(0.6, S * 0.03);
+    ctx.beginPath();
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const d = dist[y * W + x];
+      if (d === 0 || d > st.depth) continue;
+      if (d === st.depth && st.depth > 1 && rr.f() < 0.45) continue;
+      const clusters = d === 1 ? 2 : 1;
+      for (let c = 0; c < clusters; c++) {
+        const cx = (x + 0.5) * S + j(0.35), cy = (y + 0.5) * S + j(0.35);
+        const ang = rr.range(0, Math.PI), ca = Math.cos(ang), sa = Math.sin(ang);
+        const n = rr.int(3, 4), gap = S * 0.15, len = S * rr.range(0.55, 0.85);
+        for (let k = 0; k < n; k++) {
+          const off = (k - (n - 1) / 2) * gap, l = len * rr.range(0.75, 1);
+          const px = cx - sa * off, py = cy + ca * off;
+          ctx.moveTo(px - ca * l / 2, py - sa * l / 2); ctx.lineTo(px + ca * l / 2, py + sa * l / 2);
+        }
+      }
+    }
+    ctx.stroke();
+  } else if (st.outside === "cross") {
+    ctx.save(); ctx.clip(bandPath);
+    ctx.strokeStyle = pal.ink; ctx.globalAlpha = 0.7; ctx.lineWidth = Math.max(1, S * 0.025);
+    const span = (W + H) * S, step = S * 0.2;
+    ctx.beginPath();
+    for (let t = -H * S; t < W * S; t += step) { ctx.moveTo(t + j(0.03), 0); ctx.lineTo(t + H * S + j(0.03), H * S); }
+    for (let t = 0; t < span; t += step * 1.6) { ctx.moveTo(t + j(0.03), 0); ctx.lineTo(t - H * S + j(0.03), H * S); }
+    ctx.stroke(); ctx.restore();
+  } else if (st.outside === "stipple") {
+    ctx.fillStyle = pal.ink;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const d = dist[y * W + x];
+      if (d === 0 || d > st.depth) continue;
+      const n = Math.round((st.depth - d + 1) * 7 / st.depth) + 2;
+      for (let k = 0; k < n; k++) { ctx.beginPath(); ctx.arc((x + rr.f()) * S, (y + rr.f()) * S, S * rr.range(0.018, 0.04), 0, Math.PI * 2); ctx.fill(); }
+    }
+  } else if (st.outside === "solid") {
+    // thin edge line around the rock face
+    ctx.save(); ctx.clip(bandPath);
+    ctx.fillStyle = "rgba(0,0,0,.08)";
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (dist[y * W + x] === 1) ctx.fillRect(x * S, y * S, S, S);
+    ctx.restore();
+  }
+
+  // ---- floor ----
+  ctx.fillStyle = pal.floor; ctx.fill(floorPath);
+  ctx.save(); ctx.clip(floorPath);
+  ctx.lineCap = "butt";
+  if (st.floor === "checker") {
+    ctx.fillStyle = pal.floorAlt;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if ((x + y) % 2 === 0 && isFloor(x, y)) ctx.fillRect(x * S, y * S, S, S);
+  } else if (st.floor === "flagstones") {
+    ctx.strokeStyle = pal.detail; ctx.lineWidth = Math.max(1, S * 0.022);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!isFloor(x, y)) continue;
+      const split = rr.int(0, 3); const rects = [];
+      if (split === 0) rects.push([0, 0, 1, 1]);
+      else if (split === 1) { const t = rr.range(0.35, 0.65); rects.push([0, 0, t, 1], [t, 0, 1 - t, 1]); }
+      else if (split === 2) { const t = rr.range(0.35, 0.65); rects.push([0, 0, 1, t], [0, t, 1, 1 - t]); }
+      else { const t = rr.range(0.4, 0.6), u = rr.range(0.4, 0.6); rects.push([0, 0, t, u], [t, 0, 1 - t, u], [0, u, 0.5, 1 - u], [0.5, u, 0.5, 1 - u]); }
+      for (const [a, b, w, h] of rects) {
+        const i = 0.06;
+        const pts = [[a + i, b + i], [a + w - i, b + i], [a + w - i, b + h - i], [a + i, b + h - i]].map(([px, py]) => [(x + px) * S + j(0.03), (y + py) * S + j(0.03)]);
+        ctx.fillStyle = rr.f() < 0.25 ? pal.floorAlt : pal.floor;
+        ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let k = 1; k < 4; k++) ctx.lineTo(pts[k][0], pts[k][1]); ctx.closePath();
+        ctx.fill(); ctx.stroke();
+      }
+    }
+  } else if (st.floor === "planks") {
+    ctx.strokeStyle = pal.detail; ctx.lineWidth = Math.max(1, S * 0.02);
+    ctx.beginPath();
+    const rows = H * 3;
+    for (let r = 0; r <= rows; r++) {
+      const yy = r * S / 3; ctx.moveTo(0, yy); ctx.lineTo(W * S, yy);
+      let xx = rr.range(0, 2.5) * S;
+      while (xx < W * S) { ctx.moveTo(xx, yy); ctx.lineTo(xx, yy + S / 3); xx += rr.range(1.6, 3.4) * S; }
+    }
+    ctx.stroke();
+    ctx.fillStyle = pal.floorAlt;
+    for (let r = 0; r < rows; r++) if (rr.f() < 0.35) ctx.fillRect(0, r * S / 3 + S * 0.02, W * S, S / 3 - S * 0.04);
+  } else if (st.floor === "cobble") {
+    ctx.strokeStyle = pal.detail; ctx.lineWidth = Math.max(1, S * 0.02);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!isFloor(x, y)) continue;
+      for (let k = 0; k < 4; k++) {
+        const cx = (x + 0.25 + (k % 2) * 0.5) * S + j(0.06), cy = (y + 0.25 + (k >> 1) * 0.5) * S + j(0.06);
+        const rx = S * rr.range(0.16, 0.22), ry = S * rr.range(0.14, 0.2);
+        ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, rr.range(0, Math.PI), 0, Math.PI * 2);
+        ctx.fillStyle = rr.f() < 0.3 ? pal.floorAlt : pal.floor; ctx.fill(); ctx.stroke();
+      }
+    }
+  }
+  // grid
+  if (st.grid === "lines") {
+    ctx.strokeStyle = pal.grid; ctx.lineWidth = Math.max(1, S * 0.018);
+    ctx.beginPath();
+    for (let x = 0; x <= W; x++) { ctx.moveTo(x * S, 0); ctx.lineTo(x * S, H * S); }
+    for (let y = 0; y <= H; y++) { ctx.moveTo(0, y * S); ctx.lineTo(W * S, y * S); }
+    ctx.stroke();
+  } else if (st.grid === "dots") {
+    ctx.fillStyle = pal.grid;
+    for (let y = 0; y <= H; y++) for (let x = 0; x <= W; x++) { ctx.beginPath(); ctx.arc(x * S, y * S, Math.max(1, S * 0.035), 0, Math.PI * 2); ctx.fill(); }
+  }
+  ctx.restore();
+
+  // ---- walls ----
+  const openDoor = new Set(map.doors.filter(d => d.type === "arch" || d.type === "bars").map(d => d.o + d.x + "," + d.y));
+  const wallBetween = (a, b) => { if (a === 0 && b === 0) return false; return a !== b; };
+  const runs = []; // [x0,y0,x1,y1]
+  for (let y = 0; y <= H; y++) { // horizontal edges
+    let x = 0;
+    while (x < W) {
+      const isW = xx => wallBetween(at(xx, y - 1), at(xx, y)) && !openDoor.has("h" + xx + "," + y);
+      if (isW(x)) { const s = x; while (x < W && isW(x)) x++; runs.push([s, y, x, y]); } else x++;
+    }
+  }
+  for (let x = 0; x <= W; x++) { // vertical edges
+    let y = 0;
+    while (y < H) {
+      const isW = yy => wallBetween(at(x - 1, yy), at(x, yy)) && !openDoor.has("v" + x + "," + yy);
+      if (isW(y)) { const s = y; while (y < H && isW(y)) y++; runs.push([x, s, x, y]); } else y++;
+    }
+  }
+  const k = st.weight / 100;
+
+  if (st.shadow) {
+    ctx.save(); ctx.clip(floorPath);
+    ctx.strokeStyle = pal.shadow; ctx.lineCap = "square"; ctx.lineWidth = S * 0.42 * Math.max(0.8, k);
+    ctx.beginPath();
+    for (const [x0, y0, x1, y1] of runs) { ctx.moveTo(x0 * S, y0 * S); ctx.lineTo(x1 * S, y1 * S); }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const strokeRuns = (width, color, cap) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = cap || "square";
+    ctx.beginPath();
+    for (const [x0, y0, x1, y1] of runs) { ctx.moveTo(x0 * S, y0 * S); ctx.lineTo(x1 * S, y1 * S); }
+    ctx.stroke();
+  };
+  let wallW = S * 0.17 * k;
+  if (st.walls === "ink") {
+    strokeRuns(wallW, pal.ink);
+  } else if (st.walls === "fine") {
+    wallW = Math.max(1.5, S * 0.07 * k);
+    strokeRuns(wallW, pal.ink);
+  } else if (st.walls === "double" || st.walls === "stone") {
+    wallW = S * 0.26 * k;
+    strokeRuns(wallW, pal.ink);
+    strokeRuns(wallW - Math.max(2, S * 0.07 * k) * 2 + S * 0.04, st.walls === "stone" ? pal.wallFill : pal.bg);
+    if (st.walls === "stone") {
+      ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.025); ctx.lineCap = "butt";
+      ctx.beginPath();
+      const half = wallW / 2 - S * 0.03;
+      for (const [x0, y0, x1, y1] of runs) {
+        const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
+        let t = rr.range(0.15, 0.45);
+        while (t < len) {
+          const px = (horiz ? x0 + t : x0) * S, py = (horiz ? y0 : y0 + t) * S;
+          if (horiz) { ctx.moveTo(px, py - half); ctx.lineTo(px, py + half); } else { ctx.moveTo(px - half, py); ctx.lineTo(px + half, py); }
+          t += rr.range(0.38, 0.62);
+        }
+      }
+      ctx.stroke();
+    }
+  } else if (st.walls === "sketchy") {
+    wallW = S * 0.13 * k;
+    strokeRuns(S * 0.09 * k, pal.ink);
+    ctx.strokeStyle = pal.ink; ctx.lineCap = "round";
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.lineWidth = Math.max(1, S * 0.045 * k);
+      ctx.beginPath();
+      for (const [x0, y0, x1, y1] of runs) {
+        const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
+        const ov = rr.range(0.05, 0.22), steps = Math.max(1, Math.round(len / 2));
+        for (let s = 0; s <= steps; s++) {
+          const t = -ov + (len + ov * 2) * s / steps;
+          const wob = j(0.05);
+          const px = (horiz ? x0 + t : x0) * S + (horiz ? 0 : wob), py = (horiz ? y0 : y0 + t) * S + (horiz ? wob : 0);
+          if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+      }
+      ctx.stroke();
+    }
+  }
+
+  // ---- doors ----
+  ctx.lineCap = "butt"; ctx.lineJoin = "miter";
+  const dw = Math.max(1, S * 0.05);
+  for (const d of map.doors) {
+    const v = d.o === "v";
+    const cx = v ? d.x * S : (d.x + 0.5) * S, cy = v ? (d.y + 0.5) * S : d.y * S;
+    const along = S * 0.62, across = Math.max(S * 0.28, wallW + S * 0.1);
+    const rw = v ? across : along, rh = v ? along : across;
+    if (d.type === "door" || d.type === "locked") {
+      ctx.fillStyle = pal.floor; ctx.strokeStyle = pal.ink; ctx.lineWidth = dw;
+      ctx.fillRect(cx - rw / 2, cy - rh / 2, rw, rh); ctx.strokeRect(cx - rw / 2, cy - rh / 2, rw, rh);
+      if (d.type === "locked") {
+        ctx.beginPath();
+        if (v) { ctx.moveTo(cx - rw / 2 - S * 0.12, cy); ctx.lineTo(cx + rw / 2 + S * 0.12, cy); }
+        else { ctx.moveTo(cx, cy - rh / 2 - S * 0.12); ctx.lineTo(cx, cy + rh / 2 + S * 0.12); }
+        ctx.lineWidth = dw * 1.4; ctx.stroke();
+        ctx.fillStyle = pal.ink; ctx.beginPath(); ctx.arc(cx, cy, S * 0.06, 0, Math.PI * 2); ctx.fill();
+      }
+    } else if (d.type === "secret") {
+      ctx.font = `700 ${S * 0.5}px Alegreya, Georgia, serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineWidth = S * 0.12; ctx.strokeStyle = pal.floor; ctx.lineJoin = "round";
+      const ox = v ? S * 0.36 : 0, oy = v ? 0 : S * 0.36;
+      ctx.strokeText("S", cx + ox, cy + oy); ctx.fillStyle = pal.ink; ctx.fillText("S", cx + ox, cy + oy);
+      ctx.lineJoin = "miter";
+    } else if (d.type === "arch") {
+      ctx.fillStyle = pal.ink;
+      const p = Math.max(S * 0.12, wallW * 1.1);
+      if (v) { ctx.fillRect(cx - p / 2, d.y * S - p / 2, p, p); ctx.fillRect(cx - p / 2, (d.y + 1) * S - p / 2, p, p); }
+      else { ctx.fillRect(d.x * S - p / 2, cy - p / 2, p, p); ctx.fillRect((d.x + 1) * S - p / 2, cy - p / 2, p, p); }
+    } else if (d.type === "bars") {
+      ctx.fillStyle = pal.ink;
+      const p = Math.max(S * 0.12, wallW * 1.1);
+      if (v) { ctx.fillRect(cx - p / 2, d.y * S - p / 2, p, p); ctx.fillRect(cx - p / 2, (d.y + 1) * S - p / 2, p, p); }
+      else { ctx.fillRect(d.x * S - p / 2, cy - p / 2, p, p); ctx.fillRect((d.x + 1) * S - p / 2, cy - p / 2, p, p); }
+      for (let i = 1; i <= 3; i++) {
+        const t = i / 4;
+        ctx.beginPath();
+        ctx.arc(v ? cx : (d.x + t) * S, v ? (d.y + t) * S : cy, S * 0.055, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  // ---- furnishings ----
+  if (st.decor) {
+    for (const f of map.features) {
+      if (f.type === "column") {
+        ctx.beginPath(); ctx.arc(f.x * S, f.y * S, S * 0.2, 0, Math.PI * 2);
+        ctx.fillStyle = st.walls === "stone" ? pal.wallFill : pal.ink; ctx.fill();
+        ctx.lineWidth = Math.max(1, S * 0.04); ctx.strokeStyle = pal.ink; ctx.stroke();
+      } else if (f.type === "stairs") {
+        const x = f.x * S, y = f.y * S;
+        ctx.fillStyle = pal.floor; ctx.fillRect(x + S * 0.04, y + S * 0.04, S * 0.92, S * 0.92);
+        ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.035);
+        ctx.beginPath();
+        const steps = 6; const [dx, dy] = DIRS[f.d];
+        for (let i = 0; i <= steps; i++) {
+          // i = 0 at the wall, stepping away from it
+          const t = i / steps;
+          const pinch = f.down ? 0.08 + 0.3 * (1 - t) : 0.08; // descending stairs narrow toward the wall
+          if (dx !== 0) { const lx = dx > 0 ? x + S * (1 - t * 0.92 - 0.04) : x + S * (t * 0.92 + 0.04); ctx.moveTo(lx, y + S * pinch); ctx.lineTo(lx, y + S * (1 - pinch)); }
+          else { const ly = dy > 0 ? y + S * (1 - t * 0.92 - 0.04) : y + S * (t * 0.92 + 0.04); ctx.moveTo(x + S * pinch, ly); ctx.lineTo(x + S * (1 - pinch), ly); }
+        }
+        ctx.stroke();
+      } else if (f.type === "rubble") {
+        const n = 2 + Math.floor(f.s * 3);
+        ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.025); ctx.fillStyle = pal.floorAlt;
+        for (let i = 0; i < n; i++) {
+          const cx = f.x * S + j(0.18), cy = f.y * S + j(0.18), r = S * rr.range(0.04, 0.09);
+          ctx.beginPath();
+          for (let a = 0; a < 5; a++) { const ang = a / 5 * Math.PI * 2 + rr.f(); const rad = r * rr.range(0.7, 1.2); const px = cx + Math.cos(ang) * rad, py = cy + Math.sin(ang) * rad; a ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+      } else if (f.type === "statue") {
+        const x = f.x * S, y = f.y * S;
+        ctx.fillStyle = pal.floorAlt; ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.04);
+        ctx.fillRect(x - S * 0.3, y - S * 0.3, S * 0.6, S * 0.6); ctx.strokeRect(x - S * 0.3, y - S * 0.3, S * 0.6, S * 0.6);
+        ctx.beginPath(); ctx.arc(x, y, S * 0.16, 0, Math.PI * 2); ctx.fillStyle = pal.ink; ctx.fill();
+      } else if (f.type === "well") {
+        const x = f.x * S, y = f.y * S;
+        ctx.beginPath(); ctx.arc(x, y, S * 0.36, 0, Math.PI * 2); ctx.fillStyle = pal.floorAlt; ctx.fill();
+        ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.05); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x, y, S * 0.22, 0, Math.PI * 2); ctx.fillStyle = pal.ink; ctx.globalAlpha = 0.75; ctx.fill(); ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // ---- room numbers ----
+  if (st.numbers) {
+    ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
+    for (const r of map.rooms) {
+      const size = Math.min(r.w, r.h) <= 2 ? 0.5 : 0.66;
+      ctx.font = `700 ${S * size}px Alegreya, Georgia, serif`;
+      const x = (r.x + r.w / 2) * S, y = (r.y + r.h / 2) * S + S * 0.04;
+      ctx.lineWidth = S * 0.16; ctx.strokeStyle = pal.floor; ctx.strokeText(String(r.num), x, y);
+      ctx.fillStyle = pal.ink; ctx.fillText(String(r.num), x, y);
+    }
+  }
+
+  // ---- paper grain ----
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.fillStyle = noisePattern(ctx); ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+/* ================================================================
+   UI wiring
+   ================================================================ */
+const $ = id => document.getElementById(id);
+const layoutIds = ["seed", "rooms", "layout", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "loops", "doors"];
+const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "palette", "shadow", "numbers", "decor", "showTitle"];
+const SEED_WORDS = ["moss", "ember", "salt", "rook", "veil", "brass", "cinder", "hollow", "lark", "ossuary", "marrow", "tallow", "wick", "flint", "gloam", "barrow", "quill", "rust"];
+let map = null;
+
+function newSeed() {
+  const r = Math.random;
+  return SEED_WORDS[Math.floor(r() * SEED_WORDS.length)] + "-" + SEED_WORDS[Math.floor(r() * SEED_WORDS.length)] + "-" + Math.floor(r() * 900 + 100);
+}
+function layoutOpts() {
+  let minSize = +$("minSize").value, maxSize = +$("maxSize").value;
+  if (maxSize < minSize) maxSize = minSize;
+  let hallMin = +$("hallMin").value, hallMax = +$("hallMax").value;
+  if (hallMax < hallMin) hallMax = hallMin;
+  return {
+    seed: $("seed").value.trim() || "dungeon",
+    rooms: +$("rooms").value, layout: $("layout").value, mix: +$("mix").value / 100,
+    hallMin, hallMax, hallShape: $("hallShape").value, minSize, maxSize,
+    loops: +$("loops").value / 100, doors: $("doors").value
+  };
+}
+function lookOpts() {
+  return {
+    walls: $("walls").value, weight: +$("weight").value, floor: $("floor").value, grid: $("grid").value,
+    outside: $("outside").value, depth: +$("depth").value, palette: $("palette").value,
+    shadow: $("shadow").checked, numbers: $("numbers").checked, decor: $("decor").checked, title: $("showTitle").checked
+  };
+}
+function syncOutputs() {
+  const fmt = { mix: v => v + "%", loops: v => v + "%", weight: v => v + "%" };
+  document.querySelectorAll("output[for]").forEach(out => { const id = out.htmlFor.value; const v = $(id).value; out.textContent = fmt[id] ? fmt[id](v) : v; });
+  const lay = $("layout").value;
+  $("mixRow").hidden = lay !== "mixed";
+  $("hallRow").hidden = lay === "shared" || lay === "scattered";
+  $("shapeRow").hidden = lay === "shared" || lay === "scattered";
+  $("depth").disabled = $("outside").value === "solid" || $("outside").value === "none";
+}
+function drawScreen() {
+  if (!map) return;
+  const wrap = $("mapwrap"), c = $("map");
+  const st = lookOpts();
+  const rows = map.H + (st.title ? 3 : 0);
+  const pad = 2 * parseFloat(getComputedStyle(wrap).paddingLeft);
+  const cw = Math.max(100, wrap.clientWidth - pad), ch = Math.max(100, wrap.clientHeight - pad);
+  const cssS = Math.min(cw / map.W, ch / rows);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  renderMap(c, map, st, cssS * dpr);
+  c.style.width = (c.width / dpr) + "px"; c.style.height = (c.height / dpr) + "px";
+  $("dname").textContent = map.title;
+  const halls = map.cells.reduce((n, v) => n + (v === -1 ? 1 : 0), 0);
+  $("dmeta").textContent = `${map.rooms.length} rooms · ${map.doors.length} doorways · ${halls * 5} ft of halls · ${map.W} × ${map.H} squares`;
+}
+function regenerate() { map = generate(layoutOpts()); drawScreen(); }
+
+let pending = 0, pendingLayout = false;
+function schedule(layoutChanged) {
+  pendingLayout = pendingLayout || layoutChanged;
+  if (pending) return;
+  pending = requestAnimationFrame(() => { pending = 0; syncOutputs(); if (pendingLayout) regenerate(); else drawScreen(); pendingLayout = false; });
+}
+function applyPreset(name) {
+  const p = PRESETS[name]; if (!p) return;
+  $("walls").value = p.walls; $("floor").value = p.floor; $("grid").value = p.grid; $("outside").value = p.outside;
+  $("palette").value = p.palette; $("depth").value = p.depth; $("weight").value = p.weight; $("shadow").checked = p.shadow;
+}
+
+layoutIds.forEach(id => $(id).addEventListener("input", () => schedule(true)));
+lookIds.forEach(id => $(id).addEventListener("input", () => { if (["walls", "floor", "grid", "outside", "palette", "depth", "weight", "shadow"].includes(id)) $("preset").value = "custom"; schedule(false); }));
+$("preset").addEventListener("input", () => { applyPreset($("preset").value); schedule(false); });
+$("reroll").addEventListener("click", () => { $("seed").value = newSeed(); schedule(true); });
+window.addEventListener("resize", () => schedule(false));
+
+$("export").addEventListener("click", () => {
+  if (!map) return;
+  const st = lookOpts();
+  let S = +$("ppi").value;
+  const maxSide = 12000, rows = map.H + (st.title ? 3 : 0);
+  if (Math.max(map.W, rows) * S > maxSide) S = Math.floor(maxSide / Math.max(map.W, rows));
+  const c = document.createElement("canvas");
+  renderMap(c, map, st, S);
+  c.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const old = $("exportLink").href; if (old && old.startsWith("blob:")) URL.revokeObjectURL(old);
+    $("exportImg").src = url; $("exportLink").href = url;
+    const fname = ($("seed").value.trim() || "dungeon").replace(/[^a-z0-9-_]+/gi, "-") + ".png";
+    $("exportLink").download = fname;
+    $("exportInfo").textContent = `${c.width} × ${c.height} px at ${S} px per square. If Download does nothing here, right-click or long-press the image to save it.`;
+    $("overlay").hidden = false;
+  }, "image/png");
+});
+$("closeOverlay").addEventListener("click", () => { $("overlay").hidden = true; });
+$("overlay").addEventListener("click", e => { if (e.target === $("overlay")) $("overlay").hidden = true; });
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("overlay").hidden = true; });
+
+$("seed").value = "ember-lark-417";
+applyPreset("sketch");
+syncOutputs();
+regenerate();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => drawScreen());
+</script>
+</body>
+</html>
