@@ -14,8 +14,8 @@ Download them from the [Releases](https://github.com/PaperColossus/free-maps/rel
 
 [`dungeon-generator/index.html`](dungeon-generator/index.html) is a browser-based dungeon map generator. Open the file in a browser; it needs no build step or server.
 
-- **Layout:** seed, number of rooms, room size range, extra loops, and door mix. Choose how rooms connect: rooms that share walls, rooms joined by halls, a mix of both, or scattered rooms with winding halls. Hall length and shape are adjustable.
-- **Look:** wall style (solid ink, sketchy, outlined, stone blocks, fine line), floor (plain, flagstones, planks, checker, cobbles), grid (lines, dots, none), surroundings (hatching, cross-hatch, stipple, solid rock, bare) and palette. Changing the look never changes the layout.
+- **Layout:** seed, number of rooms, room size range, room shapes (circles, half circles and apses, octagons with cut corners, L-shaped rooms), niches, extra loops, and door mix. Choose how rooms connect: rooms that share walls, rooms joined by halls, a mix of both, or scattered rooms with winding halls. Hall length and shape are adjustable.
+- **Look:** wall style (solid ink, sketchy, outlined, stone blocks, fine line), floor (plain, flagstones, planks, checker, cobbles), grid (lines, dots, none), surroundings (hatching, cross-hatch, stipple, solid rock, bare) and palette. Outer walls sit outside the floor, so a one-square hall keeps a full square of floor. Shadows can be cast from a chosen light direction. Changing the look never changes the layout.
 - **Export:** PNG at 70 to 200 px per square.
 
 The hatching technique (Poisson-disc points, Voronoi cells, a cluster of parallel strokes per cell) follows Watabou's approach for One Page Dungeon, as described by [Red Blob Games](https://www.redblobgames.com/x/1947-dyson-hatching/). The code here is a separate implementation.

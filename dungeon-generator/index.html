@@ -155,6 +155,16 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
           <input id="maxSize" type="range" min="3" max="16" value="7" aria-label="Largest room side"><output for="maxSize"></output>
         </div>
       </div>
+      <div class="row"><label for="shapes">Room shapes</label>
+        <select id="shapes">
+          <option value="rect">Rectangles only</option>
+          <option value="some" selected>A few odd rooms</option>
+          <option value="many">Many odd rooms</option>
+        </select>
+      </div>
+      <div class="row"><label for="niches">Niches</label>
+        <div class="slide"><input id="niches" type="range" min="0" max="100" value="30"><output for="niches"></output></div>
+      </div>
       <div class="row"><label for="loops">Extra links</label>
         <div class="slide"><input id="loops" type="range" min="0" max="100" value="25"><output for="loops"></output></div>
       </div>
@@ -320,6 +330,158 @@ function RNG(seed) {
 const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]]; // E S W N
 
 /* ================================================================
+   Room shapes
+   Every room keeps a whole-square footprint (x, y, w, h) for layout,
+   and draws a shape inside it: rect, chamfer (45-degree corners),
+   circle, apse (one end rounded; at minimum length it is a half
+   circle) or ell (a right-angled notch out of one corner).
+   Polygons are in grid squares, wound clockwise on screen.
+   ================================================================ */
+function orient(pts) {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) { const p = pts[i], q = pts[(i + 1) % pts.length]; a += p[0] * q[1] - q[0] * p[1]; }
+  return a < 0 ? pts.reverse() : pts;
+}
+function inPoly(pts, px, py) {
+  let c = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+    if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+function roomPoly(r) {
+  const { x, y, w, h } = r, sh = r.shape || { type: "rect" };
+  let pts;
+  if (sh.type === "chamfer") {
+    const c = sh.c;
+    pts = [[x + c, y], [x + w - c, y], [x + w, y + c], [x + w, y + h - c], [x + w - c, y + h], [x + c, y + h], [x, y + h - c], [x, y + c]];
+  } else if (sh.type === "circle") {
+    const cx = x + w / 2, cy = y + h / 2, R = w / 2, n = Math.max(40, Math.round(R * 22));
+    pts = [];
+    for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; pts.push([cx + Math.cos(a) * R, cy + Math.sin(a) * R]); }
+  } else if (sh.type === "apse") {
+    const [nx, ny] = DIRS[sh.side], tx = -ny, ty = nx;
+    const along = nx !== 0 ? w : h, R = (nx !== 0 ? h : w) / 2;
+    const bx = x + w / 2 - nx * along / 2, by = y + h / 2 - ny * along / 2;
+    const P = (u, v) => [bx + nx * u + tx * v, by + ny * u + ty * v];
+    pts = [P(0, -R), P(along - R, -R)];
+    const n = Math.max(20, Math.round(R * 14));
+    for (let i = 1; i < n; i++) { const a = -Math.PI / 2 + Math.PI * i / n; pts.push(P(along - R + Math.cos(a) * R, Math.sin(a) * R)); }
+    pts.push(P(along - R, R), P(0, R));
+  } else if (sh.type === "ell") {
+    const a = sh.a, b = sh.b;
+    if (sh.corner === 0) pts = [[x + a, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y + b], [x + a, y + b]];
+    else if (sh.corner === 1) pts = [[x, y], [x + w - a, y], [x + w - a, y + b], [x + w, y + b], [x + w, y + h], [x, y + h]];
+    else if (sh.corner === 2) pts = [[x, y], [x + w, y], [x + w, y + h - b], [x + w - a, y + h - b], [x + w - a, y + h], [x, y + h]];
+    else pts = [[x, y], [x + w, y], [x + w, y + h], [x + a, y + h], [x + a, y + h - b], [x, y + h - b]];
+  } else pts = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+  return orient(pts);
+}
+// Where the label goes: the centre, or the middle of the wider arm of an ell.
+function roomLabel(r) {
+  const sh = r.shape;
+  if (!sh || sh.type !== "ell") return [r.x + r.w / 2, r.y + r.h / 2];
+  const top = sh.corner === 0 || sh.corner === 1, left = sh.corner === 0 || sh.corner === 3;
+  const band = (r.h - sh.b) * r.w, col = (r.w - sh.a) * r.h; // full-width band vs full-height column
+  if (band >= col) return [r.x + r.w / 2, top ? r.y + sh.b + (r.h - sh.b) / 2 : r.y + (r.h - sh.b) / 2];
+  return [left ? r.x + sh.a + (r.w - sh.a) / 2 : r.x + (r.w - sh.a) / 2, r.y + r.h / 2];
+}
+// Can a door sit at room cell (x,y) in the wall facing direction d?
+// The wall there must be inside the shape and straight for most of the square.
+function doorOK(r, x, y, d) {
+  const [nx, ny] = DIRS[d];
+  if (nx > 0 && x !== r.x + r.w - 1) return false;
+  if (nx < 0 && x !== r.x) return false;
+  if (ny > 0 && y !== r.y + r.h - 1) return false;
+  if (ny < 0 && y !== r.y) return false;
+  const ex = x + 0.5 + nx * 0.38, ey = y + 0.5 + ny * 0.38, tx = -ny, ty = nx;
+  const offs = (nx !== 0 ? r.h : r.w) < 3 ? [0] : [-0.6, 0, 0.6];
+  for (const o of offs) if (!inPoly(r.poly, ex + tx * o, ey + ty * o)) return false;
+  return true;
+}
+function pickShape(rng, w, h, variety, first) {
+  const rect = [w, h, { type: "rect" }];
+  if (first || variety === "rect" || !rng.chance(variety === "many" ? 0.65 : 0.33)) return rect;
+  const opts = [];
+  if (Math.max(w, h) >= 4) opts.push("circle");
+  if (Math.min(w, h) >= 3) opts.push("apse");
+  if (Math.min(w, h) >= 4) opts.push("chamfer", "ell");
+  if (!opts.length) return rect;
+  const t = rng.pick(opts);
+  if (t === "circle") { let n = Math.max(w, h, 5); if (n % 2 === 0) n++; return [n, n, { type: "circle" }]; }
+  if (t === "apse") {
+    const side = rng.int(0, 3), horiz = side % 2 === 0;
+    let along = horiz ? w : h, span = horiz ? h : w;
+    if (span % 2 === 0) span++;
+    span = Math.max(span, 3);
+    along = rng.chance(0.35) ? Math.ceil(span / 2) : Math.max(along, Math.ceil(span / 2) + 1);
+    return horiz ? [along, span, { type: "apse", side }] : [span, along, { type: "apse", side }];
+  }
+  if (t === "chamfer") return [w, h, { type: "chamfer", c: Math.min(w, h) >= 7 && rng.chance(0.4) ? 2 : 1 }];
+  return [w, h, { type: "ell", corner: rng.int(0, 3), a: rng.int(1, Math.floor(w / 2)), b: rng.int(1, Math.floor(h / 2)) }];
+}
+function nichePoly(n) {
+  const [dx, dy] = DIRS[n.d], tx = -dy, ty = dx;
+  const ex = n.x + 0.5 - dx * 0.5, ey = n.y + 0.5 - dy * 0.5; // middle of the wall it is cut into
+  const P = (u, v) => [ex + dx * u + tx * v, ey + dy * u + ty * v];
+  if (n.kind === "round") {
+    const pts = [];
+    for (let i = 0; i <= 16; i++) { const a = -Math.PI / 2 + Math.PI * i / 16; pts.push(P(Math.cos(a) * 0.5, Math.sin(a) * 0.5)); }
+    return orient(pts);
+  }
+  const depth = n.kind === "deep" ? 1 : 0.5;
+  return orient([P(0, -0.5), P(depth, -0.5), P(depth, 0.5), P(0, 0.5)]);
+}
+// Squared Euclidean distance transform (Felzenszwalb and Huttenlocher).
+function edt(mask, w, h, target) {
+  const INF = 1e20, n = Math.max(w, h);
+  const out = new Float32Array(w * h), f = new Float64Array(n), d = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
+  for (let i = 0; i < w * h; i++) out[i] = mask[i] === target ? 0 : INF;
+  const pass = (len) => {
+    let k = 0; v[0] = 0; z[0] = -INF; z[1] = INF;
+    for (let q = 1; q < len; q++) {
+      let s2 = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      while (s2 <= z[k]) { k--; s2 = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]); }
+      k++; v[k] = q; z[k] = s2; z[k + 1] = INF;
+    }
+    k = 0;
+    for (let q = 0; q < len; q++) { while (z[k + 1] < q) k++; d[q] = (q - v[k]) * (q - v[k]) + f[v[k]]; }
+  };
+  for (let x = 0; x < w; x++) { for (let y = 0; y < h; y++) f[y] = out[y * w + x]; pass(h); for (let y = 0; y < h; y++) out[y * w + x] = d[y]; }
+  for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) f[x] = out[y * w + x]; pass(w); for (let x = 0; x < w; x++) out[y * w + x] = d[x]; }
+  return out;
+}
+function tracePoly(path, pts, S) {
+  path.moveTo(pts[0][0] * S, pts[0][1] * S);
+  for (let i = 1; i < pts.length; i++) path.lineTo(pts[i][0] * S, pts[i][1] * S);
+  path.closePath();
+}
+// Floor polygons, a fine floor mask (8 samples per square) and its distance field.
+function buildGeometry(map) {
+  const { W, H, cells, rooms, doors, niches } = map;
+  const byId = new Map(rooms.map(r => [r.id, r]));
+  const polys = [];
+  for (const r of rooms) { r.poly = roomPoly(r); [r.lx, r.ly] = roomLabel(r); polys.push(r.poly); }
+  for (let y = 0; y < H; y++) { let x = 0; while (x < W) { if (cells[y * W + x] === -1) { const s0 = x; while (x < W && cells[y * W + x] === -1) x++; polys.push(orient([[s0, y], [x, y], [x, y + 1], [s0, y + 1]])); } else x++; } }
+  for (const d of doors) { // square off door mouths into shaped rooms
+    const pair = d.o === "v" ? [[d.x - 1, d.y], [d.x, d.y]] : [[d.x, d.y - 1], [d.x, d.y]];
+    for (const [cx, cy] of pair) { const r = byId.get(cells[cy * W + cx]); if (r && r.shape.type !== "rect") polys.push(orient([[cx, cy], [cx + 1, cy], [cx + 1, cy + 1], [cx, cy + 1]])); }
+  }
+  for (const n of niches) polys.push(nichePoly(n));
+  map.polys = polys;
+  const R = 8, mw = W * R, mh = H * R;
+  const c = document.createElement("canvas"); c.width = mw; c.height = mh;
+  const g = c.getContext("2d");
+  const path = new Path2D(); for (const p of polys) tracePoly(path, p, R);
+  g.fillStyle = "#000"; g.fill(path);
+  const px = g.getImageData(0, 0, mw, mh).data, mask = new Uint8Array(mw * mh);
+  for (let i = 0; i < mask.length; i++) mask[i] = px[i * 4 + 3] >= 128 ? 1 : 0;
+  Object.assign(map, { R, mw, mh, mask, floorD2: edt(mask, mw, mh, 1) });
+  map.floorAt = (x, y) => { const fx = Math.floor(x * R), fy = Math.floor(y * R); return fx >= 0 && fy >= 0 && fx < mw && fy < mh && mask[fy * mw + fx] === 1; };
+}
+
+/* ================================================================
    Generator
    Grid values: 0 empty, -1 hall, n>0 room id n.
    Doors live on cell edges: 'v' edge at x between columns x-1 and x;
@@ -362,34 +524,29 @@ function generate(o) {
     if (h > w * 2.4) h = Math.ceil(w * 2.4);
     return [w, h];
   }
-  // Cells along side d of room r, skipping corners when the side is long enough.
+  // Cells along side d of room r where a door (or niche) can go.
   function sideCells(r, d) {
     const [dx, dy] = DIRS[d]; const out = [];
-    if (dx !== 0) {
-      const x = dx > 0 ? r.x + r.w - 1 : r.x;
-      const y0 = r.h >= 3 ? r.y + 1 : r.y, y1 = r.h >= 3 ? r.y + r.h - 2 : r.y + r.h - 1;
-      for (let y = y0; y <= y1; y++) out.push([x, y]);
-    } else {
-      const y = dy > 0 ? r.y + r.h - 1 : r.y;
-      const x0 = r.w >= 3 ? r.x + 1 : r.x, x1 = r.w >= 3 ? r.x + r.w - 2 : r.x + r.w - 1;
-      for (let x = x0; x <= x1; x++) out.push([x, y]);
-    }
+    if (dx !== 0) { const x = dx > 0 ? r.x + r.w - 1 : r.x; for (let y = r.y; y < r.y + r.h; y++) if (doorOK(r, x, y, d)) out.push([x, y]); }
+    else { const y = dy > 0 ? r.y + r.h - 1 : r.y; for (let x = r.x; x < r.x + r.w; x++) if (doorOK(r, x, y, d)) out.push([x, y]); }
     return out;
   }
-  // Is (x,y) a valid non-corner cell of room r when entered moving in direction d?
-  function entryOK(r, x, y, d) {
-    const [dx] = DIRS[d];
-    if (dx !== 0) return r.h < 3 || (y > r.y && y < r.y + r.h - 1);
-    return r.w < 3 || (x > r.x && x < r.x + r.w - 1);
-  }
-  // Room rectangle whose near side contains (ex,ey), growing in direction d.
-  function rectFor(ex, ey, d, w, h) {
-    const span = DIRS[d][0] !== 0 ? h : w;
-    const off = span >= 3 ? rng.int(1, span - 2) : rng.int(0, span - 1);
-    if (d === 0) return { x: ex, y: ey - off, w, h };
-    if (d === 2) return { x: ex - w + 1, y: ey - off, w, h };
-    if (d === 1) return { x: ex - off, y: ey, w, h };
-    return { x: ex - off, y: ey - h + 1, w, h };
+  // Can room r be entered at cell (x,y) moving in direction d?
+  function entryOK(r, x, y, d) { return doorOK(r, x, y, (d + 2) % 4); }
+  // Room whose near side contains (ex,ey), growing in direction d, placed so
+  // the entrance lands on a usable stretch of its wall.
+  function placeRoom(ex, ey, d, w, h, shape) {
+    const span = DIRS[d][0] !== 0 ? h : w, fits = [];
+    for (let off = 0; off < span; off++) {
+      let r;
+      if (d === 0) r = { x: ex, y: ey - off, w, h };
+      else if (d === 2) r = { x: ex - w + 1, y: ey - off, w, h };
+      else if (d === 1) r = { x: ex - off, y: ey, w, h };
+      else r = { x: ex - off, y: ey - h + 1, w, h };
+      r.shape = shape; r.poly = roomPoly(r);
+      if (entryOK(r, ex, ey, d)) fits.push(r);
+    }
+    return fits.length ? rng.pick(fits) : null;
   }
   function rectFree(r, clear, allow) {
     for (let y = r.y - clear; y < r.y + r.h + clear; y++) for (let x = r.x - clear; x < r.x + r.w + clear; x++) {
@@ -445,7 +602,8 @@ function generate(o) {
   /* ---------- Growth: rooms attach to rooms, flush or via a hall ---------- */
   function grow() {
     const [w0, h0] = roomSize();
-    const r0 = { id: 1, x: (G >> 1) - (w0 >> 1), y: (G >> 1) - (h0 >> 1), w: w0, h: h0 };
+    const r0 = { id: 1, x: (G >> 1) - (w0 >> 1), y: (G >> 1) - (h0 >> 1), w: w0, h: h0, shape: { type: "rect" } };
+    r0.poly = roomPoly(r0);
     rooms.push(r0); setRoom(r0);
     const deg = [0, 0];
     let guard = 0;
@@ -470,8 +628,9 @@ function generate(o) {
         if (hall) { const h = buildHall(sx, sy, d); cells = h.cells; fd = h.fd; if (!hallOK(cells)) continue; }
         const last = cells.length ? cells[cells.length - 1] : [sx, sy];
         const ex = last[0] + DIRS[fd][0], ey = last[1] + DIRS[fd][1];
-        const [w, h] = roomSize();
-        const r = rectFor(ex, ey, fd, w, h);
+        const [w, h, shape] = pickShape(rng, ...roomSize(), o.shapes, false);
+        const r = placeRoom(ex, ey, fd, w, h, shape);
+        if (!r) continue;
         const allow = new Set(cells.map(c => I(c[0], c[1])));
         if (!rectFree(r, hall ? 1 : 0, allow)) continue;
         found++;
@@ -585,17 +744,18 @@ function generate(o) {
     return true;
   }
   function scatter() {
-    const sizes = []; for (let i = 0; i < o.rooms; i++) sizes.push(roomSize());
+    const sizes = []; for (let i = 0; i < o.rooms; i++) sizes.push(pickShape(rng, ...roomSize(), o.shapes, i === 0));
     let area = 0; for (const [w, h] of sizes) area += (w + 3) * (h + 3);
     let side = Math.ceil(Math.sqrt(area * 1.5));
     for (let pass = 0; pass < 40; pass++) {
       grid.fill(0); rooms.length = 0;
       let ok = true;
       const c0 = (G >> 1) - (side >> 1);
-      for (const [w, h] of sizes) {
+      for (const [w, h, shape] of sizes) {
         let placed = false;
         for (let t = 0; t < 250 && !placed; t++) {
-          const r = { x: c0 + rng.int(0, Math.max(0, side - w)), y: c0 + rng.int(0, Math.max(0, side - h)), w, h };
+          const r = { x: c0 + rng.int(0, Math.max(0, side - w)), y: c0 + rng.int(0, Math.max(0, side - h)), w, h, shape };
+          r.poly = roomPoly(r);
           if (rectFree(r, 2)) { r.id = rooms.length + 1; rooms.push(r); setRoom(r); placed = true; }
         }
         if (!placed) { ok = false; break; }
@@ -627,7 +787,39 @@ function generate(o) {
     for (const [i, j] of extra) if (!links.has(linkKey(rooms[i].id, rooms[j].id))) carve(rooms[i], rooms[j], bx0, by0, bw, bh);
   }
 
+  /* ---------- Niches: recesses cut into straight stretches of wall ---------- */
+  const niches = [];
+  function addNiches() {
+    if (o.niches <= 0) return;
+    const nr = RNG(o.seed + "|niches");
+    const isClear = (nx, ny, sx, sy) => {
+      if (get(nx, ny) !== 0) return false;
+      for (const [ax, ay] of DIRS) { const qx = nx + ax, qy = ny + ay; if (qx === sx && qy === sy) continue; if (get(qx, qy) !== 0) return false; }
+      return true;
+    };
+    for (const r of rooms) {
+      if (!nr.chance(o.niches)) continue;
+      const kind = nr.pick(["round", "square", "deep"]); // one style per room keeps it orderly
+      const want = nr.int(1, Math.max(1, Math.round((r.w + r.h) / 4)));
+      const cand = [];
+      for (let d = 0; d < 4; d++) for (const [sx, sy] of sideCells(r, d)) {
+        const nx = sx + DIRS[d][0], ny = sy + DIRS[d][1];
+        if (!doors.has(edgeKey(sx, sy, nx, ny))) cand.push([sx, sy, d, nx, ny]);
+      }
+      nr.shuffle(cand);
+      let made = 0;
+      for (const [sx, sy, d, nx, ny] of cand) {
+        if (made >= want) break;
+        if (!isClear(nx, ny, sx, sy)) continue;
+        grid[I(nx, ny)] = r.id;
+        niches.push({ room: r.id, x: nx, y: ny, d, kind });
+        made++;
+      }
+    }
+  }
+
   if (o.layout === "scattered") scatter(); else { grow(); addLoops(); }
+  addNiches();
 
   /* ---------- Number rooms in walking order from the entrance ---------- */
   const adj = rooms.map(() => []);
@@ -647,9 +839,11 @@ function generate(o) {
   const ox = x0 - M, oy = y0 - M, W = x1 - x0 + 1 + M * 2, H = y1 - y0 + 1 + M * 2;
   const cells = new Int16Array(W * H);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) cells[y * W + x] = grid[I(x + ox, y + oy)];
-  const outRooms = rooms.map(r => ({ id: r.id, num: r.num, depth: r.depth, x: r.x - ox, y: r.y - oy, w: r.w, h: r.h }));
+  const outRooms = rooms.map(r => ({ id: r.id, num: r.num, depth: r.depth, x: r.x - ox, y: r.y - oy, w: r.w, h: r.h, shape: r.shape }));
   const outDoors = [...doors.values()].map(d => ({ o: d.o, x: d.x - ox, y: d.y - oy, type: d.type }));
-  const map = { W, H, cells, rooms: outRooms, doors: outDoors, seed: o.seed };
+  const outNiches = niches.map(n => ({ ...n, x: n.x - ox, y: n.y - oy }));
+  const map = { W, H, cells, rooms: outRooms, doors: outDoors, niches: outNiches, seed: o.seed };
+  buildGeometry(map);
   map.features = furnish(map, o.seed);
   map.title = dungeonName(o.seed);
   return map;
@@ -667,17 +861,18 @@ function furnish(map, seed) {
   const touchesDoor = (x, y) => doorEdges.has("v" + x + "," + y) || doorEdges.has("v" + (x + 1) + "," + y) || doorEdges.has("h" + x + "," + y) || doorEdges.has("h" + x + "," + (y + 1));
   const feats = [];
   const used = new Set();
+  const inside = (r, px, py, m) => inPoly(r.poly, px - m, py - m) && inPoly(r.poly, px + m, py - m) && inPoly(r.poly, px + m, py + m) && inPoly(r.poly, px - m, py + m) && inPoly(r.poly, px, py);
   function stairsIn(r, down) {
     const opts = [];
     for (let d = 0; d < 4; d++) {
       const [dx, dy] = DIRS[d];
       for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) {
+        if (!inside(r, x + 0.5, y + 0.5, 0.47)) continue; // whole square must be floor
         const nx = x + dx, ny = y + dy;
-        if (nx >= r.x && nx < r.x + r.w && ny >= r.y && ny < r.y + r.h) continue; // not against this wall
-        if (at(nx, ny) !== 0) continue; // must face solid rock
+        if (map.floorAt(nx + 0.5, ny + 0.5) && map.floorAt(nx + 0.5 - dx * 0.4, ny + 0.5 - dy * 0.4)) continue; // must back onto a wall
+        if (at(nx, ny) !== r.id && at(nx, ny) !== 0) continue;
         if (touchesDoor(x, y) || used.has(x + "," + y)) continue;
-        const cxr = r.x + (r.w - 1) / 2, cyr = r.y + (r.h - 1) / 2;
-        if (Math.abs(x - cxr) < 0.6 && Math.abs(y - cyr) < 0.6) continue; // keep the label spot clear
+        if (Math.abs(x + 0.5 - r.lx) < 1.1 && Math.abs(y + 0.5 - r.ly) < 1.1) continue; // keep the label spot clear
         opts.push([x, y, d]);
       }
     }
@@ -691,7 +886,11 @@ function furnish(map, seed) {
   const deepest = rooms.filter(r => r.num !== 1).sort((a, b) => b.depth - a.depth || b.num - a.num)[0];
   if (deepest) stairsIn(deepest, true);
   for (const r of rooms) {
-    if (r.w >= 5 && r.h >= 5 && rng.chance(0.45)) {
+    const t = r.shape.type;
+    if (t === "circle" && r.w >= 7 && rng.chance(0.6)) {
+      const n = r.w >= 9 ? 8 : 6, R = r.w / 2 - 1.1, off = rng.chance(0.5) ? Math.PI / n : 0;
+      for (let i = 0; i < n; i++) { const a = off + i / n * Math.PI * 2; feats.push({ type: "column", x: r.x + r.w / 2 + Math.cos(a) * R, y: r.y + r.h / 2 + Math.sin(a) * R }); }
+    } else if ((t === "rect" || (t === "chamfer" && r.shape.c === 1)) && r.w >= 5 && r.h >= 5 && rng.chance(0.45)) {
       const along = r.w >= r.h ? "x" : "y";
       const len = along === "x" ? r.w : r.h;
       const count = Math.max(2, Math.floor((len - 2) / 2) + 1);
@@ -704,12 +903,26 @@ function furnish(map, seed) {
       // a statue or well tucked into a corner
       const cx = rng.chance(0.5) ? r.x + 0.5 : r.x + r.w - 0.5, cy = rng.chance(0.5) ? r.y + 0.5 : r.y + r.h - 0.5;
       const k = Math.floor(cx) + "," + Math.floor(cy);
-      if (!used.has(k) && !touchesDoor(Math.floor(cx), Math.floor(cy))) { used.add(k); feats.push({ type: rng.chance(0.5) ? "statue" : "well", x: cx, y: cy }); }
+      if (!used.has(k) && !touchesDoor(Math.floor(cx), Math.floor(cy)) && inside(r, cx, cy, 0.42)) { used.add(k); feats.push({ type: rng.chance(0.5) ? "statue" : "well", x: cx, y: cy }); }
     }
     if (rng.chance(0.3)) {
       const n = rng.int(1, 3);
-      for (let i = 0; i < n; i++) feats.push({ type: "rubble", x: r.x + rng.range(0.2, r.w - 0.2), y: r.y + rng.range(0.2, r.h - 0.2), s: rng.f() });
+      for (let i = 0; i < n; i++) {
+        const fx = r.x + rng.range(0.2, r.w - 0.2), fy = r.y + rng.range(0.2, r.h - 0.2), fs = rng.f();
+        if (inside(r, fx, fy, 0.15)) feats.push({ type: "rubble", x: fx, y: fy, s: fs });
+      }
     }
+  }
+  // keep columns off the stairs
+  const stairs = feats.filter(f => f.type === "stairs");
+  for (let i = feats.length - 1; i >= 0; i--) {
+    const f = feats[i];
+    if (f.type === "column" && stairs.some(st => Math.abs(f.x - (st.x + 0.5)) < 0.85 && Math.abs(f.y - (st.y + 0.5)) < 0.85)) feats.splice(i, 1);
+  }
+  // busts in some of the niches
+  for (const n of map.niches || []) if (rng.chance(0.45)) {
+    const [dx, dy] = DIRS[n.d], depth = n.kind === "deep" ? 0.5 : 0.24;
+    feats.push({ type: "bust", x: n.x + 0.5 - dx * 0.5 + dx * depth, y: n.y + 0.5 - dy * 0.5 + dy * depth });
   }
   // a little debris in the halls
   for (let i = 0; i < cells.length; i++) if (cells[i] === -1 && rng.chance(0.04)) {
@@ -762,19 +975,11 @@ const PRESETS = {
    pulled in from their shared edges, so clusters never overlap.
    All geometry is in grid squares, so screen and export match exactly.
    ================================================================ */
-function floorDistance(map, reach) {
-  const { W, H, cells } = map;
-  const isF = (x, y) => x >= 0 && y >= 0 && x < W && y < H && cells[y * W + x] !== 0;
+function floorDistance(map) {
+  const { R, mw, mh, floorD2 } = map;
   return function (px, py) {
-    let best = Infinity;
-    const fx = Math.floor(px), fy = Math.floor(py);
-    for (let y = fy - reach; y <= fy + reach; y++) for (let x = fx - reach; x <= fx + reach; x++) {
-      if (!isF(x, y)) continue;
-      const dx = Math.max(x - px, 0, px - (x + 1)), dy = Math.max(y - py, 0, py - (y + 1));
-      const d = dx * dx + dy * dy;
-      if (d < best) best = d;
-    }
-    return Math.sqrt(best);
+    const fx = Math.min(mw - 1, Math.max(0, Math.floor(px * R))), fy = Math.min(mh - 1, Math.max(0, Math.floor(py * R)));
+    return Math.sqrt(floorD2[fy * mw + fx]) / R;
   };
 }
 
@@ -794,7 +999,8 @@ function bandPoints(map, rng, spacing, accept, near) {
     return true;
   };
   const order = [];
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (map.cells[y * W + x] === 0 && near(x + 0.5, y + 0.5)) order.push([x, y]);
+  const solid = (x, y) => map.floorAt(x + 0.05, y + 0.05) && map.floorAt(x + 0.95, y + 0.05) && map.floorAt(x + 0.05, y + 0.95) && map.floorAt(x + 0.95, y + 0.95) && map.floorAt(x + 0.5, y + 0.5);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (!solid(x, y) && near(x + 0.5, y + 0.5)) order.push([x, y]);
   rng.shuffle(order);
   const tries = Math.min(160, Math.max(10, Math.ceil(3.5 / (spacing * spacing))));
   for (let pass = 0; pass < 2; pass++) for (const [x, y] of order) {
@@ -824,7 +1030,7 @@ function hatchCells(map, depth, size) {
   map._hatch = map._hatch || {};
   if (map._hatch[key]) return map._hatch[key];
   const rng = RNG(map.seed + "|hatch|" + key);
-  const dist = floorDistance(map, Math.ceil(depth) + 1);
+  const dist = floorDistance(map);
   const spacing = size;                 // closest two cluster centres may be, in squares
   const { pts, grid, gw, gh, cs } = bandPoints(map, rng, spacing, (x, y) => {
     const d = dist(x, y);
@@ -901,7 +1107,7 @@ function stippleDots(map, depth) {
   map._stipple = map._stipple || {};
   if (map._stipple[depth]) return map._stipple[depth];
   const rng = RNG(map.seed + "|stipple|" + depth);
-  const dist = floorDistance(map, Math.ceil(depth) + 1);
+  const dist = floorDistance(map);
   // dense against the wall, thinning out with distance; dots never touch
   const { pts } = bandPoints(map, rng, 0.11, (x, y) => {
     const d = dist(x, y);
@@ -922,6 +1128,60 @@ function noisePattern(ctx) {
     n.putImageData(img, 0, 0);
   }
   return ctx.createPattern(noiseCanvas, "repeat");
+}
+
+/* Shadows are computed on the fine floor mask, then scaled up smoothly.
+   Blockers are everything that is not floor, plus interior walls and
+   solid furnishings. "cast" marks floor whose path toward the light hits
+   a blocker within half a square; "soft" darkens floor near any blocker. */
+function shadowLayer(map, st, runs, wallSq, k, pal) {
+  const key = [st.shadow, st.light, wallSq.toFixed(3), k, st.decor, pal.shadow].join("|");
+  if (map._shadowKey === key) return map._shadowCanvas;
+  const { R, mw, mh, mask } = map;
+  const c = document.createElement("canvas"); c.width = mw; c.height = mh;
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, mw, mh);
+  g.globalCompositeOperation = "destination-out";
+  const fp = new Path2D(); for (const p of map.polys) tracePoly(fp, p, R);
+  g.fill(fp);
+  g.globalCompositeOperation = "source-over";
+  g.strokeStyle = "#000"; g.lineCap = "square"; g.lineWidth = Math.max(1, wallSq * R);
+  g.beginPath(); for (const [x0, y0, x1, y1] of runs) { g.moveTo(x0 * R, y0 * R); g.lineTo(x1 * R, y1 * R); } g.stroke();
+  if (st.decor) {
+    g.beginPath();
+    for (const f of map.features) {
+      if (f.type === "column") { g.moveTo((f.x + 0.2) * R, f.y * R); g.arc(f.x * R, f.y * R, 0.2 * R, 0, Math.PI * 2); }
+      else if (f.type === "bust") { g.moveTo((f.x + 0.15) * R, f.y * R); g.arc(f.x * R, f.y * R, 0.15 * R, 0, Math.PI * 2); }
+      else if (f.type === "statue") g.rect((f.x - 0.3) * R, (f.y - 0.3) * R, 0.6 * R, 0.6 * R);
+    }
+    g.fill();
+  }
+  const px = g.getImageData(0, 0, mw, mh).data, block = new Uint8Array(mw * mh);
+  for (let i = 0; i < block.length; i++) block[i] = px[i * 4 + 3] >= 128 ? 1 : 0;
+  const out = g.createImageData(mw, mh), od = out.data;
+  if (st.shadow === "cast") {
+    const th = st.light * Math.PI / 180, lx = Math.sin(th), ly = -Math.cos(th); // toward the light
+    const L = 0.5 * R * Math.max(0.8, k);
+    for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) {
+      const i = y * mw + x;
+      if (block[i] || !mask[i]) continue;
+      for (let s2 = 0.5; s2 <= L; s2 += 0.5) {
+        const sx = Math.floor(x + 0.5 + lx * s2), sy = Math.floor(y + 0.5 + ly * s2);
+        if (sx < 0 || sy < 0 || sx >= mw || sy >= mh || block[sy * mw + sx]) { od[i * 4 + 3] = s2 <= L * 0.5 ? 255 : 140; break; }
+      }
+    }
+  } else {
+    const d2 = edt(block, mw, mh, 1);
+    for (let i = 0; i < block.length; i++) {
+      if (block[i] || !mask[i]) continue;
+      const d = Math.sqrt(d2[i]) / R, a = Math.max(0, 1 - d / 0.42);
+      od[i * 4 + 3] = Math.round(Math.pow(a, 1.3) * 255);
+    }
+  }
+  g.putImageData(out, 0, 0);
+  g.globalCompositeOperation = "source-in"; g.fillStyle = pal.shadow; g.fillRect(0, 0, mw, mh);
+  map._shadowKey = key; map._shadowCanvas = c;
+  return c;
 }
 
 function renderMap(canvas, map, st, S) {
@@ -949,24 +1209,13 @@ function renderMap(canvas, map, st, S) {
     ctx.translate(0, titleRows * S);
   }
 
-  // distance (in squares) from the nearest floor, for hatching bands
-  const dist = new Int8Array(W * H).fill(99);
-  const q = [];
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (isFloor(x, y)) { dist[y * W + x] = 0; q.push(y * W + x); }
-  for (let qi = 0; qi < q.length; qi++) {
-    const i = q[qi], x = i % W, y = (i / W) | 0, d = dist[i];
-    if (d >= 4) continue;
-    for (let yy = y - 1; yy <= y + 1; yy++) for (let xx = x - 1; xx <= x + 1; xx++) {
-      if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
-      const k = yy * W + xx;
-      if (dist[k] > d + 1) { dist[k] = d + 1; q.push(k); }
-    }
-  }
-
   const floorPath = new Path2D();
-  for (let y = 0; y < H; y++) { let x = 0; while (x < W) { if (isFloor(x, y)) { const s = x; while (x < W && isFloor(x, y)) x++; floorPath.rect(s * S, y * S, (x - s) * S, S); } else x++; } }
-  const bandPath = new Path2D();
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const d = dist[y * W + x]; if (d > 0 && d <= st.depth) bandPath.rect(x * S, y * S, S, S); }
+  for (const poly of map.polys) tracePoly(floorPath, poly, S);
+  const k = st.weight / 100;
+  const wallW = st.walls === "fine" ? Math.max(1.5, S * 0.07 * k)
+    : st.walls === "double" || st.walls === "stone" ? S * 0.26 * k
+    : st.walls === "sketchy" ? S * 0.13 * k : S * 0.17 * k;
+  const edgeW = Math.max(1.2, S * 0.055 * k); // ink edge of outlined and stone walls
 
   // ---- surroundings ----
   ctx.lineCap = "round";
@@ -991,11 +1240,69 @@ function renderMap(canvas, map, st, S) {
     for (const p of stippleDots(map, st.depth)) { ctx.moveTo((p.x + p.r) * S, p.y * S); ctx.arc(p.x * S, p.y * S, Math.max(0.5, p.r * S), 0, Math.PI * 2); }
     ctx.fill();
   } else if (st.outside === "solid") {
-    // thin edge line around the rock face
-    ctx.save(); ctx.clip(bandPath);
-    ctx.fillStyle = "rgba(0,0,0,.08)";
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (dist[y * W + x] === 1) ctx.fillRect(x * S, y * S, S, S);
-    ctx.restore();
+    // darker rim on the rock face; the floor drawn next covers the inner half
+    ctx.strokeStyle = "rgba(0,0,0,.08)"; ctx.lineWidth = S * 1.6; ctx.lineJoin = "round"; ctx.stroke(floorPath);
+  }
+
+  // ---- outer walls ----
+  // Drawn just outside the floor: each stroke is twice the wall width and the
+  // floor painted afterwards hides the inner half, so a one-square hall keeps
+  // its full square of floor and overlapping shapes merge cleanly.
+  ctx.lineJoin = "miter"; ctx.miterLimit = 4; ctx.lineCap = "butt";
+  const strokeOuter = (width, color) => { ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke(floorPath); };
+  if (st.walls === "ink" || st.walls === "fine") {
+    strokeOuter(wallW * 2, pal.ink);
+  } else if (st.walls === "double" || st.walls === "stone") {
+    strokeOuter(wallW * 2, pal.ink);
+    strokeOuter((wallW - edgeW) * 2, st.walls === "stone" ? pal.wallFill : pal.bg);
+    strokeOuter(edgeW * 2, pal.ink);
+    if (st.walls === "stone") {
+      ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.025);
+      ctx.beginPath();
+      for (const poly of map.polys) {
+        let t = rr.range(0.15, 0.45);
+        for (let i = 0; i < poly.length; i++) {
+          const a = poly[i], b = poly[(i + 1) % poly.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          if (L < 1e-6) continue;
+          const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, nx = uy, ny = -ux; // outward normal
+          while (t < L) {
+            const X = (a[0] + ux * t) * S, Y = (a[1] + uy * t) * S;
+            ctx.moveTo(X + nx * edgeW, Y + ny * edgeW); ctx.lineTo(X + nx * (wallW - edgeW), Y + ny * (wallW - edgeW));
+            t += rr.range(0.38, 0.62);
+          }
+          t -= L;
+        }
+      }
+      ctx.stroke();
+    }
+  } else if (st.walls === "sketchy") {
+    strokeOuter(S * 0.09 * k * 2, pal.ink);
+    ctx.strokeStyle = pal.ink; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.lineWidth = Math.max(1, S * 0.045 * k);
+      ctx.beginPath();
+      for (const poly of map.polys) {
+        const n = poly.length, amp = n > 12 ? 0.012 : 0.045, off = wallW * 0.55;
+        const norm = i => { const a = poly[(i + n) % n], b = poly[(i + 1 + n) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[1] - a[1]) / L, -(b[0] - a[0]) / L]; };
+        const pts = [];
+        for (let i = 0; i < n; i++) {
+          const a = poly[i], b = poly[(i + 1) % n];
+          const [n0x, n0y] = norm(i - 1), [n1x, n1y] = norm(i);
+          let vx = n0x + n1x, vy = n0y + n1y; const vl = Math.hypot(vx, vy) || 1; vx /= vl; vy /= vl;
+          const sc = 1 / Math.max(0.5, vx * n1x + vy * n1y); // keep corners square
+          pts.push([a[0] * S + vx * off * sc + rr.range(-amp, amp) * S, a[1] * S + vy * off * sc + rr.range(-amp, amp) * S]);
+          const L = Math.hypot(b[0] - a[0], b[1] - a[1]), steps = Math.floor(L / 1.5);
+          for (let s2 = 1; s2 <= steps; s2++) {
+            const t = s2 / (steps + 1);
+            pts.push([(a[0] + (b[0] - a[0]) * t) * S + n1x * off + rr.range(-amp, amp) * S, (a[1] + (b[1] - a[1]) * t) * S + n1y * off + rr.range(-amp, amp) * S]);
+          }
+        }
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.closePath();
+      }
+      ctx.stroke();
+    }
   }
 
   // ---- floor ----
@@ -1059,59 +1366,30 @@ function renderMap(canvas, map, st, S) {
   }
   ctx.restore();
 
-  // ---- walls ----
+  // ---- interior walls ----
+  // Centred on grid lines, only where real floor lies on both sides
+  // (between rooms, or between a room and a hall).
   const openDoor = new Set(map.doors.filter(d => d.type === "arch" || d.type === "bars").map(d => d.o + d.x + "," + d.y));
-  const wallBetween = (a, b) => { if (a === 0 && b === 0) return false; return a !== b; };
+  const fl = map.floorAt, T3 = [0.25, 0.5, 0.75];
   const runs = []; // [x0,y0,x1,y1]
-  for (let y = 0; y <= H; y++) { // horizontal edges
+  const differs = (a, b) => a !== 0 && b !== 0 && a !== b;
+  for (let y = 1; y < H; y++) {
     let x = 0;
-    while (x < W) {
-      const isW = xx => wallBetween(at(xx, y - 1), at(xx, y)) && !openDoor.has("h" + xx + "," + y);
-      if (isW(x)) { const s = x; while (x < W && isW(x)) x++; runs.push([s, y, x, y]); } else x++;
-    }
+    const isW = xx => differs(at(xx, y - 1), at(xx, y)) && !openDoor.has("h" + xx + "," + y) && T3.every(t => fl(xx + t, y - 0.15) && fl(xx + t, y + 0.15));
+    while (x < W) { if (isW(x)) { const s0 = x; while (x < W && isW(x)) x++; runs.push([s0, y, x, y]); } else x++; }
   }
-  for (let x = 0; x <= W; x++) { // vertical edges
+  for (let x = 1; x < W; x++) {
     let y = 0;
-    while (y < H) {
-      const isW = yy => wallBetween(at(x - 1, yy), at(x, yy)) && !openDoor.has("v" + x + "," + yy);
-      if (isW(y)) { const s = y; while (y < H && isW(y)) y++; runs.push([x, s, x, y]); } else y++;
-    }
+    const isW = yy => differs(at(x - 1, yy), at(x, yy)) && !openDoor.has("v" + x + "," + yy) && T3.every(t => fl(x - 0.15, yy + t) && fl(x + 0.15, yy + t));
+    while (y < H) { if (isW(y)) { const s0 = y; while (y < H && isW(y)) y++; runs.push([x, s0, x, y]); } else y++; }
   }
-  const k = st.weight / 100;
 
-  if (st.shadow === "soft") {
-    // ambient: an even band inside every wall
+  // ---- shadows ----
+  if (st.shadow !== "none") {
+    const layer = shadowLayer(map, st, runs, wallW / S, k, pal);
     ctx.save(); ctx.clip(floorPath);
-    ctx.strokeStyle = pal.shadow; ctx.lineCap = "square"; ctx.lineWidth = S * 0.42 * Math.max(0.8, k);
-    ctx.beginPath();
-    for (const [x0, y0, x1, y1] of runs) { ctx.moveTo(x0 * S, y0 * S); ctx.lineTo(x1 * S, y1 * S); }
-    ctx.stroke();
-    ctx.restore();
-  } else if (st.shadow === "cast") {
-    // directional: each wall is swept away from the light, so only walls
-    // facing the light throw shade onto the floor (top + left for NW light)
-    const th = st.light * Math.PI / 180;
-    const ux = -Math.sin(th), uy = Math.cos(th); // direction shadows fall
-    ctx.save(); ctx.clip(floorPath);
-    ctx.fillStyle = pal.shadow;
-    for (const L of [0.5 * Math.max(0.8, k), 0.26 * Math.max(0.8, k)]) { // two layers: darker near the wall
-      const vx = ux * L * S, vy = uy * L * S;
-      ctx.beginPath();
-      for (const [x0, y0, x1, y1] of runs) {
-        let ax = x0 * S, ay = y0 * S, bx = x1 * S, by = y1 * S;
-        if ((bx - ax) * vy - (by - ay) * vx < 0) { [ax, ay, bx, by] = [bx, by, ax, ay]; } // consistent winding = union
-        ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(bx + vx, by + vy); ctx.lineTo(ax + vx, ay + vy); ctx.closePath();
-      }
-      ctx.fill();
-    }
-    if (st.decor) {
-      ctx.beginPath();
-      for (const f of map.features) {
-        if (f.type === "column") { const cx = (f.x + ux * 0.16) * S, cy = (f.y + uy * 0.16) * S; ctx.moveTo(cx + S * 0.24, cy); ctx.arc(cx, cy, S * 0.24, 0, Math.PI * 2); }
-        else if (f.type === "statue") { ctx.rect((f.x - 0.3 + ux * 0.18) * S, (f.y - 0.3 + uy * 0.18) * S, S * 0.6, S * 0.6); }
-      }
-      ctx.fill();
-    }
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(layer, 0, 0, W * S, H * S);
     ctx.restore();
   }
 
@@ -1121,20 +1399,15 @@ function renderMap(canvas, map, st, S) {
     for (const [x0, y0, x1, y1] of runs) { ctx.moveTo(x0 * S, y0 * S); ctx.lineTo(x1 * S, y1 * S); }
     ctx.stroke();
   };
-  let wallW = S * 0.17 * k;
-  if (st.walls === "ink") {
-    strokeRuns(wallW, pal.ink);
-  } else if (st.walls === "fine") {
-    wallW = Math.max(1.5, S * 0.07 * k);
+  if (st.walls === "ink" || st.walls === "fine") {
     strokeRuns(wallW, pal.ink);
   } else if (st.walls === "double" || st.walls === "stone") {
-    wallW = S * 0.26 * k;
     strokeRuns(wallW, pal.ink);
-    strokeRuns(wallW - Math.max(2, S * 0.07 * k) * 2 + S * 0.04, st.walls === "stone" ? pal.wallFill : pal.bg);
+    strokeRuns(wallW - edgeW * 2, st.walls === "stone" ? pal.wallFill : pal.bg);
     if (st.walls === "stone") {
       ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.025); ctx.lineCap = "butt";
       ctx.beginPath();
-      const half = wallW / 2 - S * 0.03;
+      const half = wallW / 2 - edgeW;
       for (const [x0, y0, x1, y1] of runs) {
         const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
         let t = rr.range(0.15, 0.45);
@@ -1147,7 +1420,6 @@ function renderMap(canvas, map, st, S) {
       ctx.stroke();
     }
   } else if (st.walls === "sketchy") {
-    wallW = S * 0.13 * k;
     strokeRuns(S * 0.09 * k, pal.ink);
     ctx.strokeStyle = pal.ink; ctx.lineCap = "round";
     for (let pass = 0; pass < 2; pass++) {
@@ -1156,11 +1428,11 @@ function renderMap(canvas, map, st, S) {
       for (const [x0, y0, x1, y1] of runs) {
         const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
         const ov = rr.range(0.05, 0.22), steps = Math.max(1, Math.round(len / 2));
-        for (let s = 0; s <= steps; s++) {
-          const t = -ov + (len + ov * 2) * s / steps;
+        for (let s2 = 0; s2 <= steps; s2++) {
+          const t = -ov + (len + ov * 2) * s2 / steps;
           const wob = j(0.05);
           const px = (horiz ? x0 + t : x0) * S + (horiz ? 0 : wob), py = (horiz ? y0 : y0 + t) * S + (horiz ? wob : 0);
-          if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          if (s2 === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
       }
       ctx.stroke();
@@ -1239,6 +1511,10 @@ function renderMap(canvas, map, st, S) {
           for (let a = 0; a < 5; a++) { const ang = a / 5 * Math.PI * 2 + rr.f(); const rad = r * rr.range(0.7, 1.2); const px = cx + Math.cos(ang) * rad, py = cy + Math.sin(ang) * rad; a ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
           ctx.closePath(); ctx.fill(); ctx.stroke();
         }
+      } else if (f.type === "bust") {
+        ctx.beginPath(); ctx.arc(f.x * S, f.y * S, S * 0.15, 0, Math.PI * 2);
+        ctx.fillStyle = pal.floorAlt; ctx.fill(); ctx.lineWidth = Math.max(1, S * 0.035); ctx.strokeStyle = pal.ink; ctx.stroke();
+        ctx.beginPath(); ctx.arc(f.x * S, f.y * S, S * 0.07, 0, Math.PI * 2); ctx.fillStyle = pal.ink; ctx.fill();
       } else if (f.type === "statue") {
         const x = f.x * S, y = f.y * S;
         ctx.fillStyle = pal.floorAlt; ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.04);
@@ -1259,7 +1535,7 @@ function renderMap(canvas, map, st, S) {
     for (const r of map.rooms) {
       const size = Math.min(r.w, r.h) <= 2 ? 0.5 : 0.66;
       ctx.font = `700 ${S * size}px Alegreya, Georgia, serif`;
-      const x = (r.x + r.w / 2) * S, y = (r.y + r.h / 2) * S + S * 0.04;
+      const x = r.lx * S, y = r.ly * S + S * 0.04;
       ctx.lineWidth = S * 0.16; ctx.strokeStyle = pal.floor; ctx.strokeText(String(r.num), x, y);
       ctx.fillStyle = pal.ink; ctx.fillText(String(r.num), x, y);
     }
@@ -1274,7 +1550,7 @@ function renderMap(canvas, map, st, S) {
    UI wiring
    ================================================================ */
 const $ = id => document.getElementById(id);
-const layoutIds = ["seed", "rooms", "layout", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "loops", "doors"];
+const layoutIds = ["seed", "rooms", "layout", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "shapes", "niches", "loops", "doors"];
 const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "cluster", "strokeGap", "palette", "shadow", "light", "numbers", "decor", "showTitle"];
 const SEED_WORDS = ["moss", "ember", "salt", "rook", "veil", "brass", "cinder", "hollow", "lark", "ossuary", "marrow", "tallow", "wick", "flint", "gloam", "barrow", "quill", "rust"];
 let map = null;
@@ -1292,7 +1568,8 @@ function layoutOpts() {
     seed: $("seed").value.trim() || "dungeon",
     rooms: +$("rooms").value, layout: $("layout").value, mix: +$("mix").value / 100,
     hallMin, hallMax, hallShape: $("hallShape").value, minSize, maxSize,
-    loops: +$("loops").value / 100, doors: $("doors").value
+    loops: +$("loops").value / 100, doors: $("doors").value,
+    shapes: $("shapes").value, niches: +$("niches").value / 100
   };
 }
 function lookOpts() {
@@ -1306,7 +1583,7 @@ function lookOpts() {
 function syncOutputs() {
   const sq = v => +(v / 100).toFixed(3) + " sq";
   const compass = v => ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(v / 22.5) % 16];
-  const fmt = { light: v => compass(+v) + " · " + v + "°", mix: v => v + "%", loops: v => v + "%", weight: v => v + "%", cluster: sq, strokeGap: sq, depth: v => v + " sq" };
+  const fmt = { niches: v => v + "%", light: v => compass(+v) + " · " + v + "°", mix: v => v + "%", loops: v => v + "%", weight: v => v + "%", cluster: sq, strokeGap: sq, depth: v => v + " sq" };
   document.querySelectorAll("output[for]").forEach(out => { const id = out.htmlFor.value; const v = $(id).value; out.textContent = fmt[id] ? fmt[id](v) : v; });
   const lay = $("layout").value;
   $("mixRow").hidden = lay !== "mixed";
