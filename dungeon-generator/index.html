@@ -220,6 +220,12 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
       <div class="row"><label for="depth">Hatch depth</label>
         <div class="slide"><input id="depth" type="range" min="1" max="3" value="2"><output for="depth"></output></div>
       </div>
+      <div class="row"><label for="cluster">Cluster size</label>
+        <div class="slide"><input id="cluster" type="range" min="35" max="110" value="62" step="1"><output for="cluster"></output></div>
+      </div>
+      <div class="row"><label for="strokeGap">Stroke spacing</label>
+        <div class="slide"><input id="strokeGap" type="range" min="7" max="28" value="13" step="1"><output for="strokeGap"></output></div>
+      </div>
       <div class="row"><label for="palette">Palette</label>
         <select id="palette">
           <option value="paper">Paper</option>
@@ -803,17 +809,18 @@ function clipHalfPlane(poly, px, py, ux, uy, c) {
   return out;
 }
 
-function hatchCells(map, depth) {
+function hatchCells(map, depth, size) {
+  const key = depth + "|" + size;
   map._hatch = map._hatch || {};
-  if (map._hatch[depth]) return map._hatch[depth];
-  const rng = RNG(map.seed + "|hatch|" + depth);
+  if (map._hatch[key]) return map._hatch[key];
+  const rng = RNG(map.seed + "|hatch|" + key);
   const dist = floorDistance(map, depth + 1);
-  const spacing = 0.62;                 // closest two cluster centres may be, in squares
+  const spacing = size;                 // closest two cluster centres may be, in squares
   const { pts, grid, gw, gh, cs } = bandPoints(map, rng, spacing, (x, y) => {
     const d = dist(x, y);
     return d > 0 && d <= depth * (0.72 + 0.42 * rng.f()); // ragged outer edge
   });
-  const gap = 0.045, maxR = 0.95, reach = Math.ceil((maxR * 2) / cs);
+  const gap = 0.045, maxR = spacing * 1.53, reach = Math.ceil((maxR * 2) / cs);
   const cells = [];
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
@@ -849,7 +856,7 @@ function hatchCells(map, depth) {
     }
     c.angle = bestA; angleOf.set(c.i, bestA);
   }
-  map._hatch[depth] = cells;
+  map._hatch[key] = cells;
   return cells;
 }
 
@@ -957,8 +964,9 @@ function renderMap(canvas, map, st, S) {
     ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(0.6, S * (cross ? 0.024 : 0.03));
     ctx.beginPath();
     const jit = 0.035;
-    for (const c of hatchCells(map, st.depth)) {
-      const sets = cross ? [[c.angle, 0.2], [c.angle + Math.PI / 2, 0.2]] : [[c.angle, 0.13]];
+    const step = st.strokeGap;
+    for (const c of hatchCells(map, st.depth, st.cluster)) {
+      const sets = cross ? [[c.angle, step * 1.5], [c.angle + Math.PI / 2, step * 1.5]] : [[c.angle, step]];
       for (const [a, step] of sets) for (const [x0, y0, x1, y1] of clusterStrokes(c, a, step)) {
         ctx.moveTo((x0 + rr.range(-jit, jit)) * S, (y0 + rr.range(-jit, jit)) * S);
         ctx.lineTo((x1 + rr.range(-jit, jit)) * S, (y1 + rr.range(-jit, jit)) * S);
@@ -1228,7 +1236,7 @@ function renderMap(canvas, map, st, S) {
    ================================================================ */
 const $ = id => document.getElementById(id);
 const layoutIds = ["seed", "rooms", "layout", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "loops", "doors"];
-const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "palette", "shadow", "numbers", "decor", "showTitle"];
+const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "cluster", "strokeGap", "palette", "shadow", "numbers", "decor", "showTitle"];
 const SEED_WORDS = ["moss", "ember", "salt", "rook", "veil", "brass", "cinder", "hollow", "lark", "ossuary", "marrow", "tallow", "wick", "flint", "gloam", "barrow", "quill", "rust"];
 let map = null;
 
@@ -1251,18 +1259,22 @@ function layoutOpts() {
 function lookOpts() {
   return {
     walls: $("walls").value, weight: +$("weight").value, floor: $("floor").value, grid: $("grid").value,
-    outside: $("outside").value, depth: +$("depth").value, palette: $("palette").value,
+    outside: $("outside").value, depth: +$("depth").value,
+    cluster: +$("cluster").value / 100, strokeGap: +$("strokeGap").value / 100, palette: $("palette").value,
     shadow: $("shadow").checked, numbers: $("numbers").checked, decor: $("decor").checked, title: $("showTitle").checked
   };
 }
 function syncOutputs() {
-  const fmt = { mix: v => v + "%", loops: v => v + "%", weight: v => v + "%" };
+  const sq = v => (v / 100).toFixed(2) + " sq";
+  const fmt = { mix: v => v + "%", loops: v => v + "%", weight: v => v + "%", cluster: sq, strokeGap: sq };
   document.querySelectorAll("output[for]").forEach(out => { const id = out.htmlFor.value; const v = $(id).value; out.textContent = fmt[id] ? fmt[id](v) : v; });
   const lay = $("layout").value;
   $("mixRow").hidden = lay !== "mixed";
   $("hallRow").hidden = lay === "shared" || lay === "scattered";
   $("shapeRow").hidden = lay === "shared" || lay === "scattered";
-  $("depth").disabled = $("outside").value === "solid" || $("outside").value === "none";
+  const out = $("outside").value;
+  $("depth").disabled = out === "solid" || out === "none";
+  $("cluster").disabled = $("strokeGap").disabled = !(out === "hatch" || out === "cross");
 }
 function drawScreen() {
   if (!map) return;
