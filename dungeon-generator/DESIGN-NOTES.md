@@ -18,12 +18,15 @@ Before adding a new shape or generation feature, check how established open-sour
 - **Hexagons** take exits only on their flat sides. DCSS restricts each shape to its own exit directions; here `doorOK` enforces it by checking that the wall is straight across most of the square.
 - **Blocked centre:** large rotundas sometimes get a sunken pool, with the column ring moved outward and the room number moved above the pool. (Brogue's circular rooms with a hole, NetHack's "blocked center".)
 - **Loops by walking distance:** extra links only go between rooms that are three or more rooms apart along existing links. Brogue's `addLoops` only opens a wall where the path distance between its two sides exceeds a threshold.
+- **Cave rooms** grow from a core circle by adding overlapping lumpy circles, each centred on floor that already exists. This follows Brogue's chunky rooms, which accept a new radius-2 circle only where floor already is. Smooth "mouth" lobes touch each side so halls and doors have a straight face to attach to.
+- **Lakes** are lumpy blobs with a shallow rim (Brogue's "wreath"). Brogue keeps a lake only if the level stays connected. Here every lake keeps at least a square of dry floor between it and the walls, so it can never cut a room's doors off from each other.
+- **Connectivity check:** in the Scattered arrangement, any room the winding halls could not reach is joined to its nearest connected rooms. If its shape offers no reachable doorway, it falls back to a rectangle.
 - **Door sites** have to be on a straight face. Brogue accepts a door site only when exactly one direction faces into the room, which rules out corners.
 
 ## Not yet adopted, worth trying
 
-- **Chunky and cave rooms:** Brogue builds these from 2 to 8 overlapping radius-2 circles, or from a cellular-automaton blob.
+- **Cellular-automaton caverns:** Brogue's other cave method, for large open caverns.
 - **Diamond and triangle rooms** from DCSS, which exit at corners or along flanks.
 - **Symmetric decoration sets** from DCSS: rings of 8 pillars, centre features, glass partitions with doors.
 - **Rooms within rooms:** NetHack's mausoleum and nesting rooms.
-- **Lakes with a shallow rim, and bridges** placed only where they save a long walk (Brogue).
+- **Lakes that touch walls, with bridges** placed only where they save a long walk. This needs a connectivity check like Brogue's (`lakeDisruptsPassability`).

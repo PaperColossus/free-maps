@@ -14,7 +14,7 @@ Download them from the [Releases](https://github.com/PaperColossus/free-maps/rel
 
 [`dungeon-generator/index.html`](dungeon-generator/index.html) is a browser-based dungeon map generator. Open the file in a browser; it needs no build step or server.
 
-- **Layout:** seed, number of rooms, room size range, room shapes (circles with optional pools, half circles and apses, octagons, hexagons, crosses, T and L shapes), niches, extra loops, and door mix. Choose how rooms connect: rooms that share walls, rooms joined by halls, a mix of both, or scattered rooms with winding halls. Hall length and shape are adjustable.
+- **Layout:** seed, number of rooms, room size range, room shapes (circles with optional pools, half circles and apses, octagons, hexagons, crosses, T and L shapes, caves), niches, water, extra loops, and door mix. Choose how rooms connect: rooms that share walls, rooms joined by halls, a mix of both, or scattered rooms with winding halls. Hall length and shape are adjustable.
 - **Look:** wall style (solid ink, sketchy, outlined, stone blocks, fine line), floor (plain, flagstones, planks, checker, cobbles), grid (lines, dots, none), surroundings (hatching, cross-hatch, stipple, solid rock, bare) and palette. Outer walls sit outside the floor, so a one-square hall keeps a full square of floor. Shadows can be cast from a chosen light direction. Changing the look never changes the layout.
 - **Export:** PNG at 70 to 200 px per square.
 
