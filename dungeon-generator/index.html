@@ -1744,7 +1744,7 @@ function shadowLayer(map, st, runs, wallSq, k, pal) {
   const fp = new Path2D(); for (const p of map.polys) tracePoly(fp, p, R);
   g.fill(fp);
   g.globalCompositeOperation = "source-over";
-  g.strokeStyle = "#000"; g.lineCap = "square"; g.lineWidth = Math.max(1, wallSq * R);
+  g.strokeStyle = "#000"; g.lineCap = "butt"; g.lineWidth = Math.max(1, wallSq * R);
   for (const wm of [1, 2]) {
     g.lineWidth = Math.max(1, wallSq * R * wm);
     g.beginPath(); for (const [x0, y0, x1, y1, m] of runs) if ((m || 1) === wm) { g.moveTo(x0 * R, y0 * R); g.lineTo(x1 * R, y1 * R); } g.stroke();
@@ -1982,7 +1982,8 @@ function renderMap(canvas, map, st, S) {
   // (a doorway that leaves an opening ends a chain). Each chain takes one side
   // offset, decided by where the outer walls continue just past its two ends,
   // so a wall never steps in and out along its length.
-  const runs = []; // [x0,y0,x1,y1,1(,"jog")] in squares
+  const runs = []; // [x0,y0,x1,y1,1(,"jog")] in squares, ends final (drawn with butt caps)
+  const chains = [];
   const chainDir = new Map(); // edge key -> offset used, for doors
   // exact floor test against the room and hall outlines (the mask is too coarse for wall thicknesses)
   const polyBox = map.polys.map(p => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const [x, y] of p) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } return [x0, y0, x1, y1]; });
@@ -2027,13 +2028,26 @@ function renderMap(canvas, map, st, S) {
         // exactly one square; doorway openings keep their ends)
         if (!openBefore && (sp0[0] > 0 || dir !== 0)) { let t = a0; while (t > a0 - 1 && reach(t - step / 2)) t -= step; a0 = t; }
         if (!openAfter && !jog && (spN[1] < 1 || dir !== 0)) { let t = a1; while (t < a1 + 1 && reach(t + step / 2)) t += step; a1 = t; }
-        const off = pos + dir * halfSq;
-        const run = o === "h" ? [a0, off, a1, off, 1] : [off, a0, off, a1, 1];
-        if (jog) run.push("jog");
-        runs.push(run);
+        chains.push({ o, pos, off: pos + dir * halfSq, a0, a1, jog,
+          // whole-square ends that aren't doorways may meet another inner wall
+          startAt: sp0[0] === 0 && !openBefore ? s0 : null, endAt: spN[1] === 1 && !openAfter && !jog ? last + 1 : null });
         for (let e = s0; e <= last; e++) chainDir.set(o + pos + "," + e, dir);
       }
     }
+  }
+  // Where a wall ends against another inner wall (a T or a corner), stop it at
+  // that wall's far face, whichever side of the grid line each one sits on,
+  // so joints close up with no step. Other ends run on by half a wall into
+  // the outer wall (what a square line cap did before).
+  const meets = (c, at) => chains.find(b => b.o !== c.o && b.pos === at && b.a0 <= c.pos + 0.01 && b.a1 >= c.pos - 0.01);
+  for (const c of chains) {
+    let a0 = c.a0, a1 = c.a1;
+    const bs = c.startAt !== null ? meets(c, c.startAt) : null, be = c.endAt !== null ? meets(c, c.endAt) : null;
+    a0 = bs ? bs.off - halfSq : a0 - halfSq;
+    a1 = be ? be.off + halfSq : a1 + halfSq;
+    const run = c.o === "h" ? [a0, c.off, a1, c.off, 1] : [c.off, a0, c.off, a1, 1];
+    if (c.jog) run.push("jog");
+    runs.push(run);
   }
   const dirOf = (o, pos, i) => {
     const k = o + pos + "," + i;
@@ -2076,7 +2090,7 @@ function renderMap(canvas, map, st, S) {
     lg.fill(floorPath);
     if (inset > 0) { lg.lineWidth = inset * 2; lg.stroke(floorPath); }
     lg.globalCompositeOperation = "source-over";
-    lg.strokeStyle = color; lg.lineCap = "square"; lg.lineWidth = Math.max(0.5, w - inset * 2); lg.stroke(runPath);
+    lg.strokeStyle = color; lg.lineCap = "butt"; lg.lineWidth = Math.max(0.5, w - inset * 2); lg.stroke(runPath);
     lg.lineWidth = Math.max(0.5, w * 2 - inset * 2); lg.stroke(thickPath);
     if (extraInner) extraInner();
   };
