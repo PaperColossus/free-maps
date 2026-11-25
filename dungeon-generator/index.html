@@ -1262,6 +1262,51 @@ function generate(o) {
       if (!nr.chance(o.niches)) continue;
       const kind = nr.pick(["round", "square", "deep"]); // one style per room keeps it orderly
       const want = nr.int(1, Math.max(1, Math.round((r.w + r.h) / 4)));
+      const placeNiche = (sx, sy, d) => {
+        const nx = sx + DIRS[d][0], ny = sy + DIRS[d][1];
+        grid[I(nx, ny)] = r.id;
+        niches.push({ room: r.id, x: nx, y: ny, d, kind });
+        const t = SYM !== "none" ? twinOf(r) : null;
+        if (t && mx(nx) !== nx) { // the matching niche across the axis
+          const mnx = mx(nx), msx = mx(sx), md = mDir(d);
+          if (get(msx, sy) === t.id && doorOK(t, msx, sy, md) && !doors.has(edgeKey(msx, sy, mnx, ny)) && isClear(mnx, ny, msx, sy)) {
+            grid[I(mnx, ny)] = t.id; niches.push({ room: t.id, x: mnx, y: ny, d: md, kind });
+          }
+        }
+      };
+      // Patterned (about half the time): niches centred and evenly spaced on
+      // one wall, often repeated on the facing wall so they sit opposite each other.
+      const style = nr.f();
+      if (style < 0.55) {
+        const usable = d => { // along-wall position -> side cell, for cells a niche could go in
+          const m = new Map();
+          for (const [sx, sy] of sideCells(r, d)) {
+            const nx = sx + DIRS[d][0], ny = sy + DIRS[d][1];
+            if (!doors.has(edgeKey(sx, sy, nx, ny)) && isClear(nx, ny, sx, sy)) m.set(d % 2 === 0 ? sy : sx, [sx, sy]);
+          }
+          return m;
+        };
+        const facing = style < 0.33;
+        for (const d of nr.shuffle([0, 1, 2, 3])) {
+          const span = d % 2 === 0 ? r.h : r.w, start = d % 2 === 0 ? r.y : r.x, mid = start + (span - 1) / 2;
+          const here = usable(d), there = facing ? usable((d + 2) % 4) : null;
+          let chosen = null;
+          for (let k = Math.min(3, want + 1); k >= 1 && !chosen; k--) {
+            const gaps = k === 1 ? [0] : Array.from({ length: span }, (_, g) => Math.round(span / k) - g).filter(g => g >= 2);
+            for (const g of gaps) {
+              const at = Array.from({ length: k }, (_, n) => mid + (n - (k - 1) / 2) * g);
+              if (at.every(a => Number.isInteger(a) && here.has(a) && (!facing || there.has(a)))) { chosen = at; break; }
+            }
+          }
+          if (!chosen) continue;
+          for (const a of chosen) {
+            placeNiche(...here.get(a), d);
+            if (facing) placeNiche(...there.get(a), (d + 2) % 4);
+          }
+          break;
+        }
+        continue;
+      }
       const cand = [];
       for (let d = 0; d < 4; d++) for (const [sx, sy] of sideCells(r, d)) {
         const nx = sx + DIRS[d][0], ny = sy + DIRS[d][1];
@@ -1272,16 +1317,8 @@ function generate(o) {
       for (const [sx, sy, d, nx, ny] of cand) {
         if (made >= want) break;
         if (!isClear(nx, ny, sx, sy)) continue;
-        grid[I(nx, ny)] = r.id;
-        niches.push({ room: r.id, x: nx, y: ny, d, kind });
+        placeNiche(sx, sy, d);
         made++;
-        const t = SYM !== "none" ? twinOf(r) : null;
-        if (t && mx(nx) !== nx) { // the matching niche across the axis
-          const mnx = mx(nx), msx = mx(sx), md = mDir(d);
-          if (get(msx, sy) === t.id && doorOK(t, msx, sy, md) && !doors.has(edgeKey(msx, sy, mnx, ny)) && isClear(mnx, ny, msx, sy)) {
-            grid[I(mnx, ny)] = t.id; niches.push({ room: t.id, x: mnx, y: ny, d: md, kind });
-          }
-        }
       }
     }
   }
@@ -1701,7 +1738,10 @@ function shadowLayer(map, st, runs, wallSq, k, pal) {
   g.fill(fp);
   g.globalCompositeOperation = "source-over";
   g.strokeStyle = "#000"; g.lineCap = "square"; g.lineWidth = Math.max(1, wallSq * R);
-  g.beginPath(); for (const [x0, y0, x1, y1] of runs) { g.moveTo(x0 * R, y0 * R); g.lineTo(x1 * R, y1 * R); } g.stroke();
+  for (const wm of [1, 2]) {
+    g.lineWidth = Math.max(1, wallSq * R * wm);
+    g.beginPath(); for (const [x0, y0, x1, y1, m] of runs) if ((m || 1) === wm) { g.moveTo(x0 * R, y0 * R); g.lineTo(x1 * R, y1 * R); } g.stroke();
+  }
   if (st.decor) {
     g.beginPath();
     for (const f of map.features) {
@@ -1797,67 +1837,6 @@ function renderMap(canvas, map, st, S) {
   } else if (st.outside === "solid") {
     // darker rim on the rock face; the floor drawn next covers the inner half
     ctx.strokeStyle = "rgba(0,0,0,.08)"; ctx.lineWidth = S * 1.6; ctx.lineJoin = "round"; ctx.stroke(floorPath);
-  }
-
-  // ---- outer walls ----
-  // Drawn just outside the floor: each stroke is twice the wall width and the
-  // floor painted afterwards hides the inner half, so a one-square hall keeps
-  // its full square of floor and overlapping shapes merge cleanly.
-  ctx.lineJoin = "miter"; ctx.miterLimit = 4; ctx.lineCap = "butt";
-  const strokeOuter = (width, color) => { ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke(floorPath); };
-  if (st.walls === "ink" || st.walls === "fine") {
-    strokeOuter(wallW * 2, pal.ink);
-  } else if (st.walls === "double" || st.walls === "stone") {
-    strokeOuter(wallW * 2, pal.ink);
-    strokeOuter((wallW - edgeW) * 2, st.walls === "stone" ? pal.wallFill : pal.bg);
-    strokeOuter(edgeW * 2, pal.ink);
-    if (st.walls === "stone") {
-      ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.025);
-      ctx.beginPath();
-      for (const poly of map.polys) {
-        let t = rr.range(0.15, 0.45);
-        for (let i = 0; i < poly.length; i++) {
-          const a = poly[i], b = poly[(i + 1) % poly.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
-          if (L < 1e-6) continue;
-          const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, nx = uy, ny = -ux; // outward normal
-          while (t < L) {
-            const X = (a[0] + ux * t) * S, Y = (a[1] + uy * t) * S;
-            ctx.moveTo(X + nx * edgeW, Y + ny * edgeW); ctx.lineTo(X + nx * (wallW - edgeW), Y + ny * (wallW - edgeW));
-            t += rr.range(0.38, 0.62);
-          }
-          t -= L;
-        }
-      }
-      ctx.stroke();
-    }
-  } else if (st.walls === "sketchy") {
-    strokeOuter(S * 0.09 * k * 2, pal.ink);
-    ctx.strokeStyle = pal.ink; ctx.lineCap = "round"; ctx.lineJoin = "round";
-    for (let pass = 0; pass < 2; pass++) {
-      ctx.lineWidth = Math.max(1, S * 0.045 * k);
-      ctx.beginPath();
-      for (const poly of map.polys) {
-        const n = poly.length, amp = n > 12 ? 0.012 : 0.045, off = wallW * 0.55;
-        const norm = i => { const a = poly[(i + n) % n], b = poly[(i + 1 + n) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[1] - a[1]) / L, -(b[0] - a[0]) / L]; };
-        const pts = [];
-        for (let i = 0; i < n; i++) {
-          const a = poly[i], b = poly[(i + 1) % n];
-          const [n0x, n0y] = norm(i - 1), [n1x, n1y] = norm(i);
-          let vx = n0x + n1x, vy = n0y + n1y; const vl = Math.hypot(vx, vy) || 1; vx /= vl; vy /= vl;
-          const sc = 1 / Math.max(0.5, vx * n1x + vy * n1y); // keep corners square
-          pts.push([a[0] * S + vx * off * sc + rr.range(-amp, amp) * S, a[1] * S + vy * off * sc + rr.range(-amp, amp) * S]);
-          const L = Math.hypot(b[0] - a[0], b[1] - a[1]), steps = Math.floor(L / 1.5);
-          for (let s2 = 1; s2 <= steps; s2++) {
-            const t = s2 / (steps + 1);
-            pts.push([(a[0] + (b[0] - a[0]) * t) * S + n1x * off + rr.range(-amp, amp) * S, (a[1] + (b[1] - a[1]) * t) * S + n1y * off + rr.range(-amp, amp) * S]);
-          }
-        }
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-        ctx.closePath();
-      }
-      ctx.stroke();
-    }
   }
 
   // ---- floor ----
@@ -1979,16 +1958,21 @@ function renderMap(canvas, map, st, S) {
     if (a === -1) return -1;
     if (b === -1) return 1;
     const shared = j => { const [p2, q2] = side(o, pos, j); return p2 > 0 && q2 > 0 && p2 !== q2 && floorBoth(o, pos, j); };
-    let vote = 0;
+    let vote = 0, votes = 0;
     for (const step of [-1, 1]) {
       let j = i + step;
       while (shared(j)) j += step;
       const c = j + 0.5;
       const pF = o === "h" ? fl(c, pos - 0.15) : fl(pos - 0.15, c), qF = o === "h" ? fl(c, pos + 0.15) : fl(pos + 0.15, c);
-      if (qF && !pF) vote--; else if (pF && !qF) vote++;
+      if (qF && !pF) { vote--; votes++; } else if (pF && !qF) { vote++; votes++; }
     }
+    // The two ends continue into outer walls on opposite sides (rooms meeting
+    // corner to corner): no single position meets both, so the wall is drawn
+    // twice as thick, covering both, and each outer wall runs into it flush.
+    if (votes === 2 && vote === 0) return THICK;
     return Math.sign(vote);
   };
+  const THICK = 9;
   const halfSq = wallW / 2 / S;
   const runs = []; // [x0,y0,x1,y1] in squares, already shifted off the grid line where needed
   for (const o of ["h", "v"]) {
@@ -1999,8 +1983,8 @@ function renderMap(canvas, map, st, S) {
         if (!wallEdge(o, pos, i) || openDoor.has(o + (o === "h" ? i + "," + pos : pos + "," + i))) { i++; continue; }
         const dir = edgeDir(o, pos, i), s0 = i;
         while (i < len && wallEdge(o, pos, i) && !openDoor.has(o + (o === "h" ? i + "," + pos : pos + "," + i)) && edgeDir(o, pos, i) === dir) i++;
-        const off = pos + dir * halfSq;
-        runs.push(o === "h" ? [s0, off, i, off] : [off, s0, off, i]);
+        const off = pos + (dir === THICK ? 0 : dir) * halfSq, wm = dir === THICK ? 2 : 1;
+        runs.push(o === "h" ? [s0, off, i, off, wm] : [off, s0, off, i, wm]);
       }
     }
   }
@@ -2014,50 +1998,119 @@ function renderMap(canvas, map, st, S) {
     ctx.restore();
   }
 
-  const strokeRuns = (width, color, cap) => {
-    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = cap || "square";
-    ctx.beginPath();
-    for (const [x0, y0, x1, y1] of runs) { ctx.moveTo(x0 * S, y0 * S); ctx.lineTo(x1 * S, y1 * S); }
-    ctx.stroke();
+  // ---- walls ----
+  // Every wall (the band just outside the floor, and the inner walls between
+  // rooms and halls) is drawn onto one layer as a single shape. Outlined and
+  // stone walls are that shape in ink with a fill inset inside it, so joints
+  // between outer and inner walls have no seams or steps.
+  const layer = document.createElement("canvas"); layer.width = canvas.width; layer.height = canvas.height;
+  const lg = layer.getContext("2d");
+  const base = ctx.getTransform();
+  const clearLayer = () => { lg.setTransform(1, 0, 0, 1, 0, 0); lg.globalCompositeOperation = "source-over"; lg.clearRect(0, 0, layer.width, layer.height); lg.setTransform(base); };
+  const stamp = () => { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore(); };
+  const runPath = new Path2D(), thickPath = new Path2D();
+  for (const [x0, y0, x1, y1, wm] of runs) { const rp = wm === 2 ? thickPath : runPath; rp.moveTo(x0 * S, y0 * S); rp.lineTo(x1 * S, y1 * S); }
+  // The wall shape of thickness `w`, shrunk by `inset` on every side.
+  // `extraOuter`/`extraInner` draw additional marks before the floor is cut away / after.
+  const wallShape = (w, inset, color, extraOuter, extraInner) => {
+    clearLayer();
+    lg.strokeStyle = color; lg.fillStyle = color; lg.lineJoin = "miter"; lg.miterLimit = 4; lg.lineCap = "butt";
+    lg.lineWidth = Math.max(0.5, (w - inset) * 2); lg.stroke(floorPath);
+    if (extraOuter) extraOuter();
+    lg.globalCompositeOperation = "destination-out";
+    lg.fill(floorPath);
+    if (inset > 0) { lg.lineWidth = inset * 2; lg.stroke(floorPath); }
+    lg.globalCompositeOperation = "source-over";
+    lg.strokeStyle = color; lg.lineCap = "square"; lg.lineWidth = Math.max(0.5, w - inset * 2); lg.stroke(runPath);
+    lg.lineWidth = Math.max(0.5, w * 2 - inset * 2); lg.stroke(thickPath);
+    if (extraInner) extraInner();
   };
   if (st.walls === "ink" || st.walls === "fine") {
-    strokeRuns(wallW, pal.ink);
+    wallShape(wallW, 0, pal.ink); stamp();
   } else if (st.walls === "double" || st.walls === "stone") {
-    strokeRuns(wallW, pal.ink);
-    strokeRuns(wallW - edgeW * 2, st.walls === "stone" ? pal.wallFill : pal.bg);
-    if (st.walls === "stone") {
-      ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.025); ctx.lineCap = "butt";
-      ctx.beginPath();
-      const half = wallW / 2 - edgeW;
-      for (const [x0, y0, x1, y1] of runs) {
-        const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
+    wallShape(wallW, 0, pal.ink); stamp();
+    wallShape(wallW, edgeW, st.walls === "stone" ? pal.wallFill : pal.bg);
+    if (st.walls === "stone") { // block joints, kept to the fill so they never cross the ink edges
+      lg.globalCompositeOperation = "source-atop";
+      lg.strokeStyle = pal.ink; lg.lineWidth = Math.max(1, S * 0.025); lg.lineCap = "butt";
+      lg.beginPath();
+      for (const poly of map.polys) {
         let t = rr.range(0.15, 0.45);
-        while (t < len) {
+        for (let i = 0; i < poly.length; i++) {
+          const a = poly[i], b = poly[(i + 1) % poly.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          if (L < 1e-6) continue;
+          const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, nx = uy, ny = -ux; // outward normal
+          while (t < L) {
+            const X = (a[0] + ux * t) * S, Y = (a[1] + uy * t) * S;
+            const outside = !map.floorAt(a[0] + ux * t + nx * wallW * 0.5 / S, a[1] + uy * t + ny * wallW * 0.5 / S);
+            if (outside) { lg.moveTo(X, Y); lg.lineTo(X + nx * wallW, Y + ny * wallW); }
+            t += rr.range(0.38, 0.62);
+          }
+          t -= L;
+        }
+      }
+      for (const [x0, y0, x1, y1, wm] of runs) {
+        const half = wallW / 2 * wm;
+        const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
+        let t = rr.range(0.25, 0.45);
+        while (t < len - 0.25) { // keep joints off the ends, where walls meet
           const px = (horiz ? x0 + t : x0) * S, py = (horiz ? y0 : y0 + t) * S;
-          if (horiz) { ctx.moveTo(px, py - half); ctx.lineTo(px, py + half); } else { ctx.moveTo(px - half, py); ctx.lineTo(px + half, py); }
+          if (horiz) { lg.moveTo(px, py - half); lg.lineTo(px, py + half); } else { lg.moveTo(px - half, py); lg.lineTo(px + half, py); }
           t += rr.range(0.38, 0.62);
         }
       }
-      ctx.stroke();
+      lg.stroke();
+      lg.globalCompositeOperation = "source-over";
     }
+    stamp();
   } else if (st.walls === "sketchy") {
-    strokeRuns(S * 0.09 * k, pal.ink);
-    ctx.strokeStyle = pal.ink; ctx.lineCap = "round";
-    for (let pass = 0; pass < 2; pass++) {
-      ctx.lineWidth = Math.max(1, S * 0.045 * k);
-      ctx.beginPath();
-      for (const [x0, y0, x1, y1] of runs) {
-        const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
-        const ov = rr.range(0.05, 0.22), steps = Math.max(1, Math.round(len / 2));
-        for (let s2 = 0; s2 <= steps; s2++) {
-          const t = -ov + (len + ov * 2) * s2 / steps;
-          const wob = j(0.05);
-          const px = (horiz ? x0 + t : x0) * S + (horiz ? 0 : wob), py = (horiz ? y0 : y0 + t) * S + (horiz ? wob : 0);
-          if (s2 === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    const sketchOuter = () => { // loose strokes just outside each floor outline
+      lg.lineCap = "round"; lg.lineJoin = "round";
+      for (let pass = 0; pass < 2; pass++) {
+        lg.lineWidth = Math.max(1, S * 0.045 * k);
+        lg.beginPath();
+        for (const poly of map.polys) {
+          const n = poly.length, amp = n > 12 ? 0.012 : 0.045, off = wallW * 0.55;
+          const norm = i => { const a = poly[(i + n) % n], b = poly[(i + 1 + n) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[1] - a[1]) / L, -(b[0] - a[0]) / L]; };
+          const pts = [];
+          for (let i = 0; i < n; i++) {
+            const a = poly[i], b = poly[(i + 1) % n];
+            const [n0x, n0y] = norm(i - 1), [n1x, n1y] = norm(i);
+            let vx = n0x + n1x, vy = n0y + n1y; const vl = Math.hypot(vx, vy) || 1; vx /= vl; vy /= vl;
+            const sc = 1 / Math.max(0.5, vx * n1x + vy * n1y);
+            pts.push([a[0] * S + vx * off * sc + rr.range(-amp, amp) * S, a[1] * S + vy * off * sc + rr.range(-amp, amp) * S]);
+            const L = Math.hypot(b[0] - a[0], b[1] - a[1]), steps = Math.floor(L / 1.5);
+            for (let s2 = 1; s2 <= steps; s2++) {
+              const t = s2 / (steps + 1);
+              pts.push([(a[0] + (b[0] - a[0]) * t) * S + n1x * off + rr.range(-amp, amp) * S, (a[1] + (b[1] - a[1]) * t) * S + n1y * off + rr.range(-amp, amp) * S]);
+            }
+          }
+          lg.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) lg.lineTo(pts[i][0], pts[i][1]);
+          lg.closePath();
         }
+        lg.stroke();
       }
-      ctx.stroke();
-    }
+    };
+    const sketchInner = () => { // loose strokes along the inner walls
+      lg.lineCap = "round";
+      for (let pass = 0; pass < 2; pass++) {
+        lg.lineWidth = Math.max(1, S * 0.045 * k);
+        lg.beginPath();
+        for (const [x0, y0, x1, y1] of runs) {
+          const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
+          const ov = rr.range(0.02, 0.12), steps = Math.max(1, Math.round(len / 2));
+          for (let s2 = 0; s2 <= steps; s2++) {
+            const t = -ov + (len + ov * 2) * s2 / steps, wob = j(0.04);
+            const px = (horiz ? x0 + t : x0) * S + (horiz ? 0 : wob), py = (horiz ? y0 : y0 + t) * S + (horiz ? wob : 0);
+            if (s2 === 0) lg.moveTo(px, py); else lg.lineTo(px, py);
+          }
+        }
+        lg.stroke();
+      }
+    };
+    wallShape(S * 0.09 * k, 0, pal.ink, sketchOuter, sketchInner);
+    stamp();
   }
 
   // ---- doors ----
@@ -2065,9 +2118,10 @@ function renderMap(canvas, map, st, S) {
   const dw = Math.max(1, S * 0.05);
   for (const d of map.doors) {
     const v = d.o === "v";
-    const shift = edgeDir(d.o, v ? d.x : d.y, v ? d.y : d.x) * wallW / 2; // sit in the wall, not on the grid line
+    const dd = edgeDir(d.o, v ? d.x : d.y, v ? d.y : d.x), thick = dd === THICK;
+    const shift = (thick ? 0 : dd) * wallW / 2; // sit in the wall, not on the grid line
     const cx = v ? d.x * S + shift : (d.x + 0.5) * S, cy = v ? (d.y + 0.5) * S : d.y * S + shift;
-    const along = S * 0.62, across = Math.max(S * 0.28, wallW + S * 0.1);
+    const along = S * 0.62, across = Math.max(S * 0.28, wallW * (thick ? 2 : 1) + S * 0.1);
     const rw = v ? across : along, rh = v ? along : across;
     if (d.type === "door" || d.type === "locked") {
       ctx.fillStyle = pal.floor; ctx.strokeStyle = pal.ink; ctx.lineWidth = dw;
@@ -2085,14 +2139,8 @@ function renderMap(canvas, map, st, S) {
       const ox = v ? S * 0.36 : 0, oy = v ? 0 : S * 0.36;
       ctx.strokeText("S", cx + ox, cy + oy); ctx.fillStyle = pal.ink; ctx.fillText("S", cx + ox, cy + oy);
       ctx.lineJoin = "miter";
-    } else if (d.type === "arch" || d.type === "bars") {
-      // jambs just outside the opening, in line with the wall, so they close it off flush
+    } else if (d.type === "bars") {
       ctx.fillStyle = pal.ink;
-      const p = wallW;
-      if (v) { ctx.fillRect(cx - p / 2, d.y * S - p, p, p); ctx.fillRect(cx - p / 2, (d.y + 1) * S, p, p); }
-      else { ctx.fillRect(d.x * S - p, cy - p / 2, p, p); ctx.fillRect((d.x + 1) * S, cy - p / 2, p, p); }
-    }
-    if (d.type === "bars") {
       for (let i = 1; i <= 3; i++) {
         const t = i / 4;
         ctx.beginPath();
