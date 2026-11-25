@@ -1290,13 +1290,20 @@ function generate(o) {
         for (const d of nr.shuffle([0, 1, 2, 3])) {
           const span = d % 2 === 0 ? r.h : r.w, start = d % 2 === 0 ? r.y : r.x, mid = start + (span - 1) / 2;
           const here = usable(d), there = facing ? usable((d + 2) % 4) : null;
+          // Spread k niches evenly with the end gaps about half the middle gaps
+          // (e.g. 1, 2, 1 squares on a six-square wall), kept symmetric about the
+          // wall's centre; take the closest arrangement that fits.
           let chosen = null;
           for (let k = Math.min(3, want + 1); k >= 1 && !chosen; k--) {
-            const gaps = k === 1 ? [0] : Array.from({ length: span }, (_, g) => Math.round(span / k) - g).filter(g => g >= 2);
-            for (const g of gaps) {
+            const ideal = Array.from({ length: k }, (_, n) => start + span * (2 * n + 1) / (2 * k) - 0.5);
+            let best = null;
+            for (let g = k === 1 ? 0 : 2; g <= (k === 1 ? 0 : span); g++) {
               const at = Array.from({ length: k }, (_, n) => mid + (n - (k - 1) / 2) * g);
-              if (at.every(a => Number.isInteger(a) && here.has(a) && (!facing || there.has(a)))) { chosen = at; break; }
+              if (!at.every(a => Number.isInteger(a) && here.has(a) && (!facing || there.has(a)))) continue;
+              const err = at.reduce((e2, a, n) => e2 + Math.abs(a - ideal[n]), 0);
+              if (!best || err < best.err) best = { at, err };
             }
+            if (best && best.err <= 0.6 * k) chosen = best.at;
           }
           if (!chosen) continue;
           for (const a of chosen) {
@@ -1957,22 +1964,27 @@ function renderMap(canvas, map, st, S) {
     const [a, b] = side(o, pos, i);
     if (a === -1) return -1;
     if (b === -1) return 1;
+    const [vs, ve] = endVotes(o, pos, i);
+    // The two ends continue into outer walls on opposite sides (rooms meeting
+    // corner to corner): no single position meets both, so the wall lines up
+    // with the outer wall at its start and turns a corner at its end (JOG).
+    if (vs && ve && vs !== ve) return JOG;
+    return Math.sign(vs + ve);
+  };
+  // Which side the outer wall is on just past each end of a shared stretch:
+  // -1 toward P, +1 toward Q, 0 if neither or both.
+  function endVotes(o, pos, i) {
     const shared = j => { const [p2, q2] = side(o, pos, j); return p2 > 0 && q2 > 0 && p2 !== q2 && floorBoth(o, pos, j); };
-    let vote = 0, votes = 0;
-    for (const step of [-1, 1]) {
+    return [-1, 1].map(step => {
       let j = i + step;
       while (shared(j)) j += step;
       const c = j + 0.5;
       const pF = o === "h" ? fl(c, pos - 0.15) : fl(pos - 0.15, c), qF = o === "h" ? fl(c, pos + 0.15) : fl(pos + 0.15, c);
-      if (qF && !pF) { vote--; votes++; } else if (pF && !qF) { vote++; votes++; }
-    }
-    // The two ends continue into outer walls on opposite sides (rooms meeting
-    // corner to corner): no single position meets both, so the wall is drawn
-    // twice as thick, covering both, and each outer wall runs into it flush.
-    if (votes === 2 && vote === 0) return THICK;
-    return Math.sign(vote);
-  };
-  const THICK = 9;
+      return qF && !pF ? -1 : pF && !qF ? 1 : 0;
+    });
+  }
+  const JOG = 9;
+  const dirOf = (o, pos, i) => { const d = edgeDir(o, pos, i); return d === JOG ? endVotes(o, pos, i)[0] : d; };
   const halfSq = wallW / 2 / S;
   const runs = []; // [x0,y0,x1,y1] in squares, already shifted off the grid line where needed
   for (const o of ["h", "v"]) {
@@ -1983,11 +1995,18 @@ function renderMap(canvas, map, st, S) {
         if (!wallEdge(o, pos, i) || openDoor.has(o + (o === "h" ? i + "," + pos : pos + "," + i))) { i++; continue; }
         const dir = edgeDir(o, pos, i), s0 = i;
         while (i < len && wallEdge(o, pos, i) && !openDoor.has(o + (o === "h" ? i + "," + pos : pos + "," + i)) && edgeDir(o, pos, i) === dir) i++;
-        const off = pos + (dir === THICK ? 0 : dir) * halfSq, wm = dir === THICK ? 2 : 1;
-        runs.push(o === "h" ? [s0, off, i, off, wm] : [off, s0, off, i, wm]);
+        if (dir === JOG) { // aligned with the start's outer wall; run on past the end to turn the corner into the other
+          const off = pos + endVotes(o, pos, s0)[0] * halfSq, e = i + halfSq;
+          runs.push(o === "h" ? [s0, off, e, off, 1, "jog"] : [off, s0, off, e, 1, "jog"]);
+        } else {
+          const off = pos + dir * halfSq;
+          runs.push(o === "h" ? [s0, off, i, off, 1] : [off, s0, off, i, 1]);
+        }
       }
     }
   }
+
+  map._runs = runs; // inner wall segments (squares), kept for exports
 
   // ---- shadows ----
   if (st.shadow !== "none") {
@@ -2010,6 +2029,38 @@ function renderMap(canvas, map, st, S) {
   const stamp = () => { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore(); };
   const runPath = new Path2D(), thickPath = new Path2D();
   for (const [x0, y0, x1, y1, wm] of runs) { const rp = wm === 2 ? thickPath : runPath; rp.moveTo(x0 * S, y0 * S); rp.lineTo(x1 * S, y1 * S); }
+  // Niches one or two squares apart on the same wall: fill the rock between
+  // them so it reads as one thick wall with recesses, not a wall wrapped
+  // around each niche separately.
+  const nicheGaps = [];
+  {
+    const groups = new Map();
+    for (const n of map.niches || []) { const key = n.room + ":" + n.d; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(n); }
+    for (const list of groups.values()) {
+      const d = list[0].d, horiz = d % 2 === 1; // niches on a north/south wall line up along x
+      list.sort((a, b) => horiz ? a.x - b.x : a.y - b.y);
+      for (let i = 1; i < list.length; i++) {
+        const a = list[i - 1], b = list[i];
+        if (horiz ? a.y !== b.y : a.x !== b.x) continue;
+        const a1 = horiz ? a.x : a.y, a2 = horiz ? b.x : b.y, gap = a2 - a1 - 1;
+        if (gap < 1 || gap > 2) continue;
+        const line = d === 0 ? a.x : d === 2 ? a.x + 1 : d === 1 ? a.y : a.y + 1;
+        const depth = Math.max(...[a, b].map(n => n.kind === "deep" ? 1 : 0.5));
+        nicheGaps.push({ d, line, from: a1 + 1, to: a2, depth });
+      }
+    }
+  }
+  const drawGaps = inset => {
+    if (!nicheGaps.length) return;
+    lg.beginPath();
+    for (const gp of nicheGaps) {
+      const out = gp.d === 0 || gp.d === 1 ? 1 : -1;
+      const u0 = gp.line, u1 = gp.line + out * (gp.depth + (wallW - inset) / S);
+      const [x0, x1, y0, y1] = gp.d % 2 === 0 ? [u0, u1, gp.from, gp.to] : [gp.from, gp.to, u0, u1];
+      lg.rect(Math.min(x0, x1) * S, Math.min(y0, y1) * S, Math.abs(x1 - x0) * S, Math.abs(y1 - y0) * S);
+    }
+    lg.fill();
+  };
   // The wall shape of thickness `w`, shrunk by `inset` on every side.
   // `extraOuter`/`extraInner` draw additional marks before the floor is cut away / after.
   const wallShape = (w, inset, color, extraOuter, extraInner) => {
@@ -2026,10 +2077,10 @@ function renderMap(canvas, map, st, S) {
     if (extraInner) extraInner();
   };
   if (st.walls === "ink" || st.walls === "fine") {
-    wallShape(wallW, 0, pal.ink); stamp();
+    wallShape(wallW, 0, pal.ink, () => drawGaps(0)); stamp();
   } else if (st.walls === "double" || st.walls === "stone") {
-    wallShape(wallW, 0, pal.ink); stamp();
-    wallShape(wallW, edgeW, st.walls === "stone" ? pal.wallFill : pal.bg);
+    wallShape(wallW, 0, pal.ink, () => drawGaps(0)); stamp();
+    wallShape(wallW, edgeW, st.walls === "stone" ? pal.wallFill : pal.bg, () => drawGaps(edgeW));
     if (st.walls === "stone") { // block joints, kept to the fill so they never cross the ink edges
       lg.globalCompositeOperation = "source-atop";
       lg.strokeStyle = pal.ink; lg.lineWidth = Math.max(1, S * 0.025); lg.lineCap = "butt";
@@ -2109,7 +2160,7 @@ function renderMap(canvas, map, st, S) {
         lg.stroke();
       }
     };
-    wallShape(S * 0.09 * k, 0, pal.ink, sketchOuter, sketchInner);
+    wallShape(S * 0.09 * k, 0, pal.ink, () => { drawGaps(0); sketchOuter(); }, sketchInner);
     stamp();
   }
 
@@ -2118,10 +2169,9 @@ function renderMap(canvas, map, st, S) {
   const dw = Math.max(1, S * 0.05);
   for (const d of map.doors) {
     const v = d.o === "v";
-    const dd = edgeDir(d.o, v ? d.x : d.y, v ? d.y : d.x), thick = dd === THICK;
-    const shift = (thick ? 0 : dd) * wallW / 2; // sit in the wall, not on the grid line
+    const shift = dirOf(d.o, v ? d.x : d.y, v ? d.y : d.x) * wallW / 2; // sit in the wall, not on the grid line
     const cx = v ? d.x * S + shift : (d.x + 0.5) * S, cy = v ? (d.y + 0.5) * S : d.y * S + shift;
-    const along = S * 0.62, across = Math.max(S * 0.28, wallW * (thick ? 2 : 1) + S * 0.1);
+    const along = S * 0.62, across = Math.max(S * 0.28, wallW + S * 0.1);
     const rw = v ? across : along, rh = v ? along : across;
     if (d.type === "door" || d.type === "locked") {
       ctx.fillStyle = pal.floor; ctx.strokeStyle = pal.ink; ctx.lineWidth = dw;
