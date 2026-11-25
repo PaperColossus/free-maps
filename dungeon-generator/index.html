@@ -2205,8 +2205,8 @@ function renderMap(canvas, map, st, S) {
           return (P(halfSq * 0.98) || Q(halfSq * 0.98)) && !(P(0.04) && Q(0.04));
         };
         const step = 1 / 48;
-        if (!openBefore && (sp0[0] > 0 || dir !== 0)) { let t = a0; while (t > a0 - 1 && reach(t - step / 2)) t -= step; a0 = t; }
-        if (!openAfter && !jog && (spN[1] < 1 || dir !== 0)) { let t = a1; while (t < a1 + 1 && reach(t + step / 2)) t += step; a1 = t; }
+        // walls are centred: an end stops on the centre line of whatever it
+        // meets (the floor edge or the crossing wall's grid line), no further
     Object.assign(c, { off: pos + dir * halfSq, a0, a1,
       // whole-square ends that aren't doorways may meet another inner wall
       startAt: sp0[0] === 0 && !openBefore ? s0 : null, endAt: spN[1] === 1 && !openAfter && !jog ? last + 1 : null });
@@ -2223,8 +2223,7 @@ function renderMap(canvas, map, st, S) {
     // at a doorway opening a wall stops at the opening's edge, or at the far
     // face of a wall crossing there; it never runs on into the opening
     const os = c.openBefore && c.sp0[0] === 0 ? meets(c, c.s0) : null, oe = c.openAfter && c.spN[1] === 1 ? meets(c, c.last + 1) : null;
-    a0 = bs ? bs.off - halfSq : c.openBefore ? (os ? Math.min(a0, os.off - halfSq) : a0) : a0 - halfSq - (c.turnStart ? halfSq : 0);
-    a1 = be ? be.off + halfSq : c.openAfter ? (oe ? Math.max(a1, oe.off + halfSq) : a1) : a1 + halfSq + (c.turnEnd ? halfSq : 0);
+    // (bs/be/os/oe only matter for offset walls, kept for reference)
     const run = c.o === "h" ? [a0, c.off, a1, c.off, 1] : [c.off, a0, c.off, a1, 1];
     if (c.jog || c.turnStart || c.turnEnd) run.push("jog");
     runs.push(run);
@@ -2270,6 +2269,8 @@ function renderMap(canvas, map, st, S) {
   // on each side. The outer band is the points within r of the floor's edge:
   // (rock grown by r) inside (floor grown by r). Floor grows exactly with a
   // stroke; rock grows by stamping its mask in a ring of offsets.
+  // the merged floor outline as rings (falls back to the separate shapes)
+  const outlineRings = map.outline ? map.outline.flatMap(poly => poly.map(ring => ring.slice(0, -1))) : map.polys;
   let outlinePath = null;
   if (map.outline) { outlinePath = new Path2D(); for (const poly of map.outline) for (const ring of poly) tracePoly(outlinePath, ring.slice(0, -1), S); }
   const wallShape = (w, inset, color, extraOuter, extraInner) => {
@@ -2318,7 +2319,7 @@ function renderMap(canvas, map, st, S) {
       lg.globalCompositeOperation = "source-atop";
       lg.strokeStyle = pal.ink; lg.lineWidth = Math.max(1, S * 0.025); lg.lineCap = "butt";
       lg.beginPath();
-      for (const poly of map.polys) {
+      for (const poly of outlineRings) {
         let t = rr.range(0.15, 0.45);
         for (let i = 0; i < poly.length; i++) {
           const a = poly[i], b = poly[(i + 1) % poly.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
@@ -2327,7 +2328,8 @@ function renderMap(canvas, map, st, S) {
           while (t < L) {
             const X = (a[0] + ux * t) * S, Y = (a[1] + uy * t) * S;
             const outside = !map.floorAt(a[0] + ux * t + nx * wallW * 0.5 / S, a[1] + uy * t + ny * wallW * 0.5 / S);
-            if (outside) { lg.moveTo(X - nx * wallW / 2, Y - ny * wallW / 2); lg.lineTo(X + nx * wallW / 2, Y + ny * wallW / 2); }
+            const nearJoin = runs.some(q => Math.hypot(q[0] - (X / S), q[1] - (Y / S)) < wallW / S + 0.15 || Math.hypot(q[2] - (X / S), q[3] - (Y / S)) < wallW / S + 0.15);
+            if (outside && !nearJoin) { lg.moveTo(X - nx * wallW / 2, Y - ny * wallW / 2); lg.lineTo(X + nx * wallW / 2, Y + ny * wallW / 2); }
             t += rr.range(0.38, 0.62);
           }
           t -= L;
@@ -2336,8 +2338,8 @@ function renderMap(canvas, map, st, S) {
       for (const [x0, y0, x1, y1, wm] of runs) {
         const half = wallW / 2 * wm;
         const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
-        let t = rr.range(0.25, 0.45);
-        while (t < len - 0.25) { // keep joints off the ends, where walls meet
+        let t = halfSq + rr.range(0.2, 0.4);
+        while (t < len - halfSq - 0.2) { // keep joints out of the walls this one meets
           const px = (horiz ? x0 + t : x0) * S, py = (horiz ? y0 : y0 + t) * S;
           if (horiz) { lg.moveTo(px, py - half); lg.lineTo(px, py + half); } else { lg.moveTo(px - half, py); lg.lineTo(px + half, py); }
           t += rr.range(0.38, 0.62);
@@ -2353,7 +2355,7 @@ function renderMap(canvas, map, st, S) {
       for (let pass = 0; pass < 2; pass++) {
         lg.lineWidth = Math.max(1, S * 0.045 * k);
         lg.beginPath();
-        for (const poly of map.polys) {
+        for (const poly of outlineRings) {
           const n = poly.length, amp = n > 12 ? 0.012 : 0.045, off = 0;
           const norm = i => { const a = poly[(i + n) % n], b = poly[(i + 1 + n) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[1] - a[1]) / L, -(b[0] - a[0]) / L]; };
           const pts = [];
@@ -2383,7 +2385,7 @@ function renderMap(canvas, map, st, S) {
         lg.beginPath();
         for (const [x0, y0, x1, y1] of runs) {
           const horiz = y0 === y1, len = horiz ? x1 - x0 : y1 - y0;
-          const ov = rr.range(0.02, 0.12), steps = Math.max(1, Math.round(len / 2));
+          const ov = -halfSq * 1.1 - rr.range(0, 0.04), steps = Math.max(1, Math.round(len / 2)); // stop inside the wall they meet, so no stroke end shows
           for (let s2 = 0; s2 <= steps; s2++) {
             const t = -ov + (len + ov * 2) * s2 / steps, wob = j(0.04);
             const px = (horiz ? x0 + t : x0) * S + (horiz ? 0 : wob), py = (horiz ? y0 : y0 + t) * S + (horiz ? wob : 0);
