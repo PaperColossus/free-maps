@@ -2029,39 +2029,6 @@ function renderMap(canvas, map, st, S) {
   const stamp = () => { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore(); };
   const runPath = new Path2D(), thickPath = new Path2D();
   for (const [x0, y0, x1, y1, wm] of runs) { const rp = wm === 2 ? thickPath : runPath; rp.moveTo(x0 * S, y0 * S); rp.lineTo(x1 * S, y1 * S); }
-  // Outlined and stone walls only: niches one or two squares apart on the same
-  // wall get the rock between them filled, so it reads as one thick wall with
-  // recesses rather than a wall outlined around each niche separately. (Solid
-  // styles skip this: there the fill would be a heavy black block.)
-  const nicheGaps = [];
-  {
-    const groups = new Map();
-    for (const n of map.niches || []) { const key = n.room + ":" + n.d; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(n); }
-    for (const list of groups.values()) {
-      const d = list[0].d, horiz = d % 2 === 1; // niches on a north/south wall line up along x
-      list.sort((a, b) => horiz ? a.x - b.x : a.y - b.y);
-      for (let i = 1; i < list.length; i++) {
-        const a = list[i - 1], b = list[i];
-        if (horiz ? a.y !== b.y : a.x !== b.x) continue;
-        const a1 = horiz ? a.x : a.y, a2 = horiz ? b.x : b.y, gap = a2 - a1 - 1;
-        if (gap < 1 || gap > 2) continue;
-        const line = d === 0 ? a.x : d === 2 ? a.x + 1 : d === 1 ? a.y : a.y + 1;
-        const depth = Math.max(...[a, b].map(n => n.kind === "deep" ? 1 : 0.5));
-        nicheGaps.push({ d, line, from: a1 + 1, to: a2, depth });
-      }
-    }
-  }
-  const drawGaps = inset => {
-    if (!nicheGaps.length) return;
-    lg.beginPath();
-    for (const gp of nicheGaps) {
-      const out = gp.d === 0 || gp.d === 1 ? 1 : -1;
-      const u0 = gp.line, u1 = gp.line + out * (gp.depth + (wallW - inset) / S);
-      const [x0, x1, y0, y1] = gp.d % 2 === 0 ? [u0, u1, gp.from, gp.to] : [gp.from, gp.to, u0, u1];
-      lg.rect(Math.min(x0, x1) * S, Math.min(y0, y1) * S, Math.abs(x1 - x0) * S, Math.abs(y1 - y0) * S);
-    }
-    lg.fill();
-  };
   // The wall shape of thickness `w`, shrunk by `inset` on every side.
   // `extraOuter`/`extraInner` draw additional marks before the floor is cut away / after.
   const wallShape = (w, inset, color, extraOuter, extraInner) => {
@@ -2078,10 +2045,10 @@ function renderMap(canvas, map, st, S) {
     if (extraInner) extraInner();
   };
   if (st.walls === "ink" || st.walls === "fine") {
-    wallShape(wallW, 0, pal.ink); stamp(); // solid walls: thin wrap-around lines already read cleanly
+    wallShape(wallW, 0, pal.ink); stamp();
   } else if (st.walls === "double" || st.walls === "stone") {
-    wallShape(wallW, 0, pal.ink, () => drawGaps(0)); stamp();
-    wallShape(wallW, edgeW, st.walls === "stone" ? pal.wallFill : pal.bg, () => drawGaps(edgeW));
+    wallShape(wallW, 0, pal.ink); stamp();
+    wallShape(wallW, edgeW, st.walls === "stone" ? pal.wallFill : pal.bg);
     if (st.walls === "stone") { // block joints, kept to the fill so they never cross the ink edges
       lg.globalCompositeOperation = "source-atop";
       lg.strokeStyle = pal.ink; lg.lineWidth = Math.max(1, S * 0.025); lg.lineCap = "butt";
