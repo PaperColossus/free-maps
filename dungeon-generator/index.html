@@ -2029,9 +2029,10 @@ function renderMap(canvas, map, st, S) {
   const stamp = () => { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore(); };
   const runPath = new Path2D(), thickPath = new Path2D();
   for (const [x0, y0, x1, y1, wm] of runs) { const rp = wm === 2 ? thickPath : runPath; rp.moveTo(x0 * S, y0 * S); rp.lineTo(x1 * S, y1 * S); }
-  // Niches one or two squares apart on the same wall: fill the rock between
-  // them so it reads as one thick wall with recesses, not a wall wrapped
-  // around each niche separately.
+  // Outlined and stone walls only: niches one or two squares apart on the same
+  // wall get the rock between them filled, so it reads as one thick wall with
+  // recesses rather than a wall outlined around each niche separately. (Solid
+  // styles skip this: there the fill would be a heavy black block.)
   const nicheGaps = [];
   {
     const groups = new Map();
@@ -2077,7 +2078,7 @@ function renderMap(canvas, map, st, S) {
     if (extraInner) extraInner();
   };
   if (st.walls === "ink" || st.walls === "fine") {
-    wallShape(wallW, 0, pal.ink, () => drawGaps(0)); stamp();
+    wallShape(wallW, 0, pal.ink); stamp(); // solid walls: thin wrap-around lines already read cleanly
   } else if (st.walls === "double" || st.walls === "stone") {
     wallShape(wallW, 0, pal.ink, () => drawGaps(0)); stamp();
     wallShape(wallW, edgeW, st.walls === "stone" ? pal.wallFill : pal.bg, () => drawGaps(edgeW));
@@ -2160,7 +2161,7 @@ function renderMap(canvas, map, st, S) {
         lg.stroke();
       }
     };
-    wallShape(S * 0.09 * k, 0, pal.ink, () => { drawGaps(0); sketchOuter(); }, sketchInner);
+    wallShape(S * 0.09 * k, 0, pal.ink, sketchOuter, sketchInner);
     stamp();
   }
 
