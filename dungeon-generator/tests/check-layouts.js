@@ -26,7 +26,7 @@ const { chromium } = require('playwright');
       return best;
     };
     const res = {};
-    for (const symmetry of ['none', 'partial', 'full']) for (const paths of ['branch', 'loop']) {
+    for (const symmetry of ['none', 'partial', 'full']) for (const paths of ['branch', 'mixed', 'loop']) {
       const key = symmetry + '/' + paths; const r = res[key] = { maps: 0, unreach: 0, short: 0, sym: 0, cyc: 0, worst: 0 };
       for (const layout of ['shared', 'halls', 'mixed', 'scattered']) for (const shapes of ['rect', 'many', 'caves']) for (const rooms of [9, 24]) for (let i = 0; i < 2; i++) {
         const o = layoutOpts(); Object.assign(o, { layout, shapes, rooms, symmetry, paths, seed: `s-${key}-${layout}-${shapes}-${rooms}-${i}`, water: 0.3 });

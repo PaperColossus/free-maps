@@ -143,6 +143,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
       <div class="row"><label for="paths">Paths</label>
         <select id="paths">
           <option value="branch" selected>Branching</option>
+          <option value="mixed">Mixed</option>
           <option value="loop">Looping</option>
         </select>
       </div>
@@ -638,7 +639,7 @@ function generate(o) {
   const links = new Set();
   const linkKey = (a, b) => a < b ? a + "-" + b : b + "-" + a;
   const hallP = o.layout === "shared" ? 0 : o.layout === "halls" ? 1 : o.layout === "mixed" ? o.mix : 1;
-  const SYM = o.symmetry || "none", LOOP = o.paths === "loop", AX = G >> 1; // AX: the mirror axis column
+  const SYM = o.symmetry || "none", LOOP = o.paths === "loop" || o.paths === "mixed", MIXED = o.paths === "mixed", AX = G >> 1; // AX: the mirror axis column
 
   // Rooms between a and b along existing links (breadth-first).
   function roomHops(a, b) {
@@ -764,6 +765,7 @@ function generate(o) {
 
   /* ---------- Growth: rooms attach to rooms, flush or via a hall ---------- */
   const deg = [0];
+  const linkKind = new Map(); // how each link was made: wall (shared-wall door), hall (straight), dug (winding)
   const linkDoors = new Map();
   const center = r => [r.x + r.w / 2, r.y + r.h / 2];
   function addRoom(r) { r.id = rooms.length + 1; rooms.push(r); setRoom(r); deg[r.id] = 0; return r; }
@@ -775,7 +777,7 @@ function generate(o) {
       ? [addDoor(c.sx, c.sy, c.cells[0][0], c.cells[0][1], types && types[0]), addDoor(c.last[0], c.last[1], c.ex, c.ey, types && types[1])]
       : [addDoor(c.sx, c.sy, c.ex, c.ey, types && types[0])];
     const k = linkKey(c.p.id, c.r.id);
-    links.add(k); linkDoors.set(k, ds); deg[c.p.id]++; deg[c.r.id]++;
+    links.add(k); linkDoors.set(k, ds); linkKind.set(k, c.cells.length ? "hall" : "wall"); deg[c.p.id]++; deg[c.r.id]++;
     return ds.map(d => d.type);
   }
   function makeRoot() {
@@ -939,15 +941,46 @@ function generate(o) {
     }
     return null;
   }
+  // Grow up to `steps` rooms from `start`, steering by steer(k), and close a
+  // loop as soon as a new room can link straight to one of `targets` (a shared
+  // wall door, or a short straight hall). Returns { path, closedTo }.
+  function growToward(start, targetsAt, steps, steer) {
+    const path = []; let tail = start;
+    for (let k = 1; k <= steps; k++) {
+      const hall = rng.chance(hallP), P = steer(k, tail);
+      const c = bestProposal([tail], x => (x.closeTo ? 30 - x.closeLen * 2 : 0) + toward(P)(x), p => {
+        const x = propose(p, rng.int(0, 3), hall);
+        if (!x) return null;
+        for (const t of (typeof targetsAt === "function" ? targetsAt(k) : targetsAt)) {
+          if (t === p.id) continue;
+          const opts = directOptions(x.r, t, loopLen());
+          if (opts.length) { const len = Math.min(...opts.map(q => q.len)); if (!x.closeTo || len < x.closeLen) { x.closeTo = t; x.closeLen = len; } }
+        }
+        return x;
+      });
+      if (!c) break;
+      commit(c); path.push(c.r.id); tail = c.r;
+      if (c.closeTo && linkDirect(c.r, rooms[c.closeTo - 1], loopLen())) return { path, closedTo: c.closeTo };
+    }
+    return { path, closedTo: null };
+  }
+
   function growLooping() {
     const root = makeRoot(), sym = SYM !== "none", n = o.rooms;
-    const arcLen = Math.max(1, Math.min(6, Math.round((n - 2) * 0.22)));
+    const arcLen = MIXED ? Math.max(1, Math.min(3, Math.round((n - 2) * 0.12)))
+      : Math.max(1, Math.min(6, Math.round((n - 2) * 0.22)));
     const ang = sym ? Math.PI / 2 : rng.range(0, Math.PI * 2);
     const ux = Math.cos(ang), uy = Math.sin(ang), px = -uy, py = ux;
     const step = (o.minSize + o.maxSize) / 2 + hallP * (o.hallMin + o.hallMax) / 2 + 1.5;
     const D = (arcLen + 1) * step * 0.85;
     const [rx, ry] = center(root);
-    const wp = (s, k) => { const t = k / (arcLen + 1), b = D * 0.55 * Math.sin(Math.PI * t); return [rx + ux * D * t + px * s * b, ry + uy * D * t + py * s * b]; };
+    // waypoints bow out on either side and converge on the goal, leaving
+    // about one room's width between the arc ends for the goal to fill
+    const gap = (o.minSize + o.maxSize) / 2 * 0.8 + hallP * 1.5;
+    const wp = (s, k) => {
+      const t = k / (arcLen + 0.5), b = Math.max(D * 0.5 * Math.sin(Math.PI * Math.min(t, 1)), k === arcLen ? gap : 0);
+      return [rx + ux * D * Math.min(t, 0.95) + px * s * b, ry + uy * D * Math.min(t, 0.95) + py * s * b];
+    };
     const arcs = [[], []];
     if (sym) { // the right arc as mirrored pairs; its reflection is the left arc
       let tail = root;
@@ -958,36 +991,98 @@ function generate(o) {
         commitPair(pr); arcs[0].push(pr.c.r.id); arcs[1].push(pr.m.r.id); tail = pr.c.r;
       }
     } else {
-      for (const [ai, s] of [[0, 1], [1, -1]]) {
-        let tail = root;
-        for (let k = 1; k <= arcLen; k++) {
-          const hall = rng.chance(hallP);
-          const c = bestProposal([tail], toward(wp(s, k)), p => propose(p, rng.int(0, 3), hall));
-          if (!c) break;
-          commit(c); arcs[ai].push(c.r.id); tail = c.r;
+      let tail = root;
+      for (let k = 1; k <= arcLen; k++) {
+        const hall = rng.chance(hallP);
+        const c = bestProposal([tail], toward(wp(1, k)), p => propose(p, rng.int(0, 3), hall));
+        if (!c) break;
+        commit(c); arcs[0].push(c.r.id); tail = c.r;
+      }
+      // the second arc bows out the other way, then heads for the first arc's
+      // far end, closing the loop on the first room that can reach it directly
+      if (arcs[0].length >= 1) {
+        // a loop needs 4+ rooms: the first new room may only close on the arc's second room on
+        const targets = k => k === 1 ? arcs[0].slice(1) : arcs[0];
+        const endA = rooms[arcs[0][arcs[0].length - 1] - 1];
+        const res = growToward(root, targets, arcLen + 4, (k) => k <= Math.ceil(arcLen / 2) ? wp(-1, k) : center(endA));
+        if (res.closedTo) {
+          const ia = arcs[0].indexOf(res.closedTo);
+          const goalId = res.path[res.path.length - 1];
+          arcs[0] = arcs[0].slice(0, ia + 1); arcs[1] = res.path.slice(0, -1);
+          cycle = { root: root.id, goal: goalId, arcs, closed: true };
+        } else {
+          arcs[1] = res.path;
+          // rooms on the two arcs that already touch or face each other close it too
+          outer: for (let jb = arcs[1].length - 1; jb >= 0; jb--) for (let ja = arcs[0].length - 1; ja >= 0; ja--) {
+            const a = rooms[arcs[0][ja] - 1], b = rooms[arcs[1][jb] - 1];
+            if (ja + jb + 3 < 4 || roomHops(a.id, b.id) < 3) continue;
+            if (linkDirect(b, a, loopLen())) {
+              arcs[0] = arcs[0].slice(0, ja + 1); arcs[1] = arcs[1].slice(0, jb);
+              cycle = { root: root.id, goal: b.id, arcs, closed: true };
+              break outer;
+            }
+          }
         }
       }
     }
-    const goal = placeNear([rx + ux * D, ry + uy * D], sym);
+    const endA = arcs[0].length ? rooms[arcs[0][arcs[0].length - 1] - 1] : root;
+    const endB = arcs[1].length ? rooms[arcs[1][arcs[1].length - 1] - 1] : root;
+    const mid = [(center(endA)[0] + center(endB)[0]) / 2 + ux * 1.5, (center(endA)[1] + center(endB)[1]) / 2 + uy * 1.5];
+    // close the loop with a goal room between the arc ends (shared walls or short halls)
+    let goal = cycle && cycle.closed ? rooms[cycle.goal - 1] : endA !== endB ? placeBetween(endA, endB, mid, sym) : null;
+    if (!goal && !cycle) {
+      goal = placeNear([rx + ux * D, ry + uy * D], sym);
+      if (goal) {
+        const box = carveBox(8);
+        carveSym(endA, goal, box);
+        if (!links.has(linkKey(endB.id, goal.id))) carve(endB, goal, ...box);
+      }
+    }
     if (goal) {
       const box = carveBox(8);
-      const endA = arcs[0].length ? rooms[arcs[0][arcs[0].length - 1] - 1] : root;
-      const endB = arcs[1].length ? rooms[arcs[1][arcs[1].length - 1] - 1] : root;
-      carveSym(endA, goal, box);
-      if (!links.has(linkKey(endB.id, goal.id))) carve(endB, goal, ...box);
       if (roomHops(root.id, goal.id) === Infinity) { // couldn't reach the goal: hang it off the nearest room instead
         const near = rooms.filter(r => r !== goal).sort((a, b) => Math.hypot(...center(a).map((v, i) => v - center(goal)[i])) - Math.hypot(...center(b).map((v, i) => v - center(goal)[i])));
         near.some(r => carve(r, goal, ...box));
       }
-      cycle = { root: root.id, goal: goal.id, arcs };
+      if (!cycle) cycle = { root: root.id, goal: goal.id, arcs };
     }
     // minor cycles: a detour room off one arc, joined back to the next room on that arc
-    const minors = n >= 14 ? 2 : n >= 8 ? 1 : 0;
+    const minors = MIXED ? (n >= 12 ? 1 : 0) : n >= 14 ? 2 : n >= 8 ? 1 : 0;
     for (let m = 0; m < minors && cycle; m++) {
       const arc = arcs[0];
       if (arc.length < 1) break;
       const i = rng.int(0, arc.length - 1), X = rooms[arc[i] - 1], Y = rooms[(arc[i + 1] || cycle.goal) - 1];
       const [cx0, cy0] = centroid(), away = c => Math.hypot(center(c.r)[0] - cx0, center(c.r)[1] - cy0) * 0.6;
+      // first choice: a room tucked against both X and Y (a small loop of shared walls)
+      if (!sym || !X.axis) {
+        const mx0 = (center(X)[0] + center(Y)[0]) / 2, my0 = (center(X)[1] + center(Y)[1]) / 2;
+        const ol = Math.hypot(mx0 - cx0, my0 - cy0) || 1, push = (o.minSize + o.maxSize) / 3;
+        const P = [mx0 + (mx0 - cx0) / ol * push, my0 + (my0 - cy0) / ol * push];
+        const det0 = placeBetween(X, Y, P, false);
+        if (det0) {
+          if (sym && X.twin && Y.twin) { // mirror it onto the other wing
+            const mr = mirrorRoom(det0);
+            if (rectFree(mr, hallP >= 1 ? 1 : 0)) {
+              addRoom(mr); setRoom(mr);
+              Object.assign(det0, { twin: mr.id, primary: true }); Object.assign(mr, { twin: det0.id, mirror: true });
+              const box = carveBox(8);
+              for (const q of [twinOf(X), twinOf(Y)]) if (!linkDirect(mr, q, loopLen())) carve(mr, q, ...box);
+            }
+          }
+          continue;
+        }
+      }
+      if (!sym) {
+        const ahead = [...arc.slice(i + 1), cycle.goal];
+        const res = growToward(X, ahead, 2, (k, tail) => {
+          const [tx, ty] = center(tail), l = Math.hypot(tx - cx0, ty - cy0) || 1;
+          return k === 1 ? [tx + (tx - cx0) / l * 6, ty + (ty - cy0) / l * 6] : center(Y);
+        });
+        if (res.closedTo || !res.path.length) continue;
+        const last = rooms[res.path[res.path.length - 1] - 1];
+        carveSym(last, Y, carveBox(8), detourLimit(last, Y));
+        continue;
+      }
       const hall = rng.chance(hallP);
       let det = null;
       if (sym) { const pr = bestProposal([X], x => away(x.c), p => proposePair(p, rng.int(0, 3), hall)); if (pr) { commitPair(pr); det = pr.c.r; } }
@@ -1016,9 +1111,76 @@ function generate(o) {
   }
 
   /* ---------- Extra links: straight rays between facing rooms ---------- */
+  // Straight links from room r to room b: a door in a shared wall (len 0) or
+  // a short straight hall (len <= maxLen). r need not be on the grid yet.
+  function directOptions(r, bId, maxLen) {
+    const out = [];
+    for (let d = 0; d < 4; d++) for (const [sx, sy] of sideCells(r, d)) {
+      const [dx, dy] = DIRS[d];
+      for (let t = 1; t <= maxLen + 1; t++) {
+        const x = sx + dx * t, y = sy + dy * t, v = get(x, y);
+        if (v === 0) continue;
+        if (v === bId && entryOK(rooms[v - 1], x, y, d) && !doors.has(edgeKey(sx, sy, sx + dx, sy + dy))) out.push({ sx, sy, d, len: t - 1 });
+        break;
+      }
+    }
+    return out;
+  }
+  function makeDirect(c, aId, bId, types) {
+    const [dx, dy] = DIRS[c.d];
+    const cells = [];
+    for (let t = 1; t <= c.len; t++) cells.push([c.sx + dx * t, c.sy + dy * t]);
+    if (cells.some(([x, y]) => get(x, y) !== 0) || (cells.length && !hallOK(cells))) return false;
+    for (const [x, y] of cells) grid[I(x, y)] = -1;
+    markHall(cells, aId, bId);
+    const end = cells.length ? cells[cells.length - 1] : [c.sx, c.sy];
+    const ds = cells.length ? [addDoor(c.sx, c.sy, cells[0][0], cells[0][1], types && types[0]), addDoor(end[0], end[1], end[0] + dx, end[1] + dy, types && types[1])]
+      : [addDoor(c.sx, c.sy, c.sx + dx, c.sy + dy, types && types[0])];
+    const k = linkKey(aId, bId);
+    links.add(k); linkDoors.set(k, ds); linkKind.set(k, c.len ? "hall" : "wall");
+    if (SYM !== "none") mirrorRay(c, ds.map(d2 => d2.type));
+    return true;
+  }
+  const loopLen = () => hallP > 0 ? Math.max(o.hallMax, 2) : 0;
+  // Link rooms a and b directly if they face each other; shared walls first.
+  function linkDirect(a, b, maxLen) {
+    if (links.has(linkKey(a.id, b.id))) return true;
+    const opts = rng.shuffle(directOptions(a, b.id, maxLen)).sort((p2, q2) => p2.len - q2.len);
+    return opts.some(c => makeDirect(c, a.id, b.id));
+  }
+  // A new room that touches both A and B (shared walls, or short straight
+  // halls), near point P: closes a loop the way the rest of the layout
+  // connects, instead of with long dug halls.
+  function placeBetween(A, B, P, axis) {
+    const maxLen = loopLen(), clear = hallP >= 1 ? 1 : 0;
+    let best = null;
+    for (let t = 0; t < 500; t++) {
+      let [w, h, shape] = pickShape(rng, ...roomSize(), o.shapes, false);
+      if (axis) [w, h, shape] = axisShape(w, h, shape);
+      const spread = 2 + (t >> 6);
+      const x = axis ? AX - (w - 1) / 2 : Math.round(P[0] - w / 2 + rng.int(-spread, spread));
+      const y = Math.round(P[1] - h / 2 + rng.int(-spread, spread));
+      const r = { x, y, w, h, shape, axis: !!axis };
+      r.poly = roomPoly(r);
+      if (!rectFree(r, clear)) continue;
+      const oa = directOptions(r, A.id, maxLen), ob = directOptions(r, B.id, maxLen);
+      if (!oa.length || !ob.length) continue;
+      const shortest = l => Math.min(...l.map(c => c.len));
+      const sc = -Math.hypot(r.x + w / 2 - P[0], r.y + h / 2 - P[1]) * 0.4 - shortest(oa) - shortest(ob) - ((shortest(oa) === 0) + (shortest(ob) === 0) ? 0 : 2) + rng.range(0, 1.5);
+      if (!best || sc > best.sc) best = { r, sc };
+      if (t > 200 && best) break;
+    }
+    if (!best) return null;
+    const r = addRoom(best.r);
+    setRoom(r);
+    const okA = linkDirect(r, A, maxLen), okB = linkDirect(r, B, maxLen);
+    if (!okA || !okB) { const box = carveBox(8); if (!okA) carve(r, A, ...box); if (!okB && !links.has(linkKey(r.id, B.id))) carve(r, B, ...box); }
+    return r;
+  }
+
   function addLoops() {
     if (o.loops <= 0) return;
-    const maxLen = hallP > 0 ? Math.max(o.hallMax, 2) : 0;
+    const maxLen = loopLen();
     const cand = new Map();
     for (const r of rooms) for (let d = 0; d < 4; d++) for (const [sx, sy] of sideCells(r, d)) {
       const [dx, dy] = DIRS[d];
@@ -1042,20 +1204,11 @@ function generate(o) {
     let made = 0;
     for (const k of keys) {
       if (made >= want) break;
+      const [ka, kb] = k.split("-").map(Number);
       const options = rng.shuffle(cand.get(k));
       for (const c of options) {
-        const [dx, dy] = DIRS[c.d];
-        const cells = [];
-        for (let t = 1; t <= c.len; t++) cells.push([c.sx + dx * t, c.sy + dy * t]);
-        if (cells.length && !hallOK(cells)) continue;
-        for (const [x, y] of cells) grid[I(x, y)] = -1;
-        markHall(cells, ...k.split("-").map(Number));
-        const end = cells.length ? cells[cells.length - 1] : [c.sx, c.sy];
-        const ds = cells.length ? [addDoor(c.sx, c.sy, cells[0][0], cells[0][1]), addDoor(end[0], end[1], end[0] + dx, end[1] + dy)]
-          : [addDoor(c.sx, c.sy, c.sx + dx, c.sy + dy)];
-        links.add(k); linkDoors.set(k, ds); made++;
-        if (SYM !== "none") mirrorRay(c, ds.map(d => d.type));
-        break;
+        const from = get(c.sx, c.sy);
+        if (makeDirect(c, from, from === ka ? kb : ka)) { made++; break; }
       }
     }
   }
@@ -1135,7 +1288,7 @@ function generate(o) {
     const d1 = addDoor(fx - DIRS[fd][0], fy - DIRS[fd][1], fx, fy, types && types[0]);
     const lastC = path[path.length - 1];
     const d2 = addDoor(lastC[0], lastC[1], goalCell[0], goalCell[1], types && types[1]);
-    links.add(linkKey(a.id, b.id)); linkDoors.set(linkKey(a.id, b.id), [d1, d2]);
+    links.add(linkKey(a.id, b.id)); linkDoors.set(linkKey(a.id, b.id), [d1, d2]); linkKind.set(linkKey(a.id, b.id), "dug");
     return { path, a, b, goalCell, types: [d1.type, d2.type] };
   }
   // The same hall reflected across the axis (between the two rooms' twins),
@@ -1373,6 +1526,7 @@ function generate(o) {
   for (const gi of tunnelCells) if (!builtCells.has(gi)) { const x = gi % G - ox, y = Math.floor(gi / G) - oy; if (x >= 0 && y >= 0 && x < W && y < H && cells[y * W + x] === -1) tunnels[y * W + x] = 1; }
   const map = { W, H, cells, tunnels, rooms: outRooms, doors: outDoors, niches: outNiches, seed: o.seed };
   buildGeometry(map);
+  map.linkKinds = [...linkKind.values()];
   if (cycle && rooms[cycle.goal - 1]) { map.cycle = cycle; map.goal = cycle.goal; map.keyRoom = cycle.keyRoom; }
   map.features = furnish(map, o.seed);
   map.lakes = addLakes(map, o.seed, o.water);
@@ -2599,7 +2753,7 @@ function drawScreen() {
   c.style.width = (c.width / dpr) + "px"; c.style.height = (c.height / dpr) + "px";
   $("dname").textContent = map.title;
   const halls = map.cells.reduce((n, v) => n + (v === -1 ? 1 : 0), 0);
-  const loopNote = map.cycle ? " · main loop" + ({ lock: ", locked route and key", secret: " with a secret route", open: "" }[map.cycle.kind] || "") : "";
+  const loopNote = map.cycle ? (layoutOpts().paths === "mixed" ? " · one loop" : " · main loop") + ({ lock: ", locked route and key", secret: " with a secret route", open: "" }[map.cycle.kind] || "") : "";
   $("dmeta").textContent = `${map.rooms.length} rooms · ${map.doors.length} doorways · ${halls * 5} ft of halls${loopNote} · ${map.W} × ${map.H} squares`;
 }
 function regenerate() { map = generate(layoutOpts()); drawScreen(); }
