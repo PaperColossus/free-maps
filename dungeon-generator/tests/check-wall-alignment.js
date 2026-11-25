@@ -24,7 +24,7 @@ const { chromium } = require('playwright');
             const other = runs.find(q => q !== r && (q[1] === q[3]) === h && base(q) === pos && (h ? q[0] - 0.01 <= t && t <= q[2] + 0.01 : q[1] - 0.01 <= t && t <= q[3] + 0.01));
             if (other) { if (Math.abs(t - end) > 0.3) break; /* across an open doorway the two sides may differ */ found = { kind: 'inner', off: h ? other[1] : other[0] }; break; }
             const P = h ? F(t, pos - 0.06) : F(pos - 0.06, t), Q = h ? F(t, pos + 0.06) : F(pos + 0.06, t);
-            if (P !== Q) { if (Math.abs(t - end) > 0.3) break; /* across an open doorway */ found = { kind: 'outer', off: pos + (P ? 1 : -1) * hs }; break; }
+            if (P !== Q) { if (Math.abs(t - end) > 0.3) break; /* across an open doorway */ found = { kind: 'outer', off: pos } /* outer walls are centred on the floor edge */; break; }
             if (!P && !Q) break; // solid rock: wall turns away
             // both floor: a doorway or open floor; keep looking only a short way
           }

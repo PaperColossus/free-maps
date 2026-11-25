@@ -314,6 +314,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/polygon-clipping@0.15.7/dist/polygon-clipping.umd.min.js"></script>
 <script>
 "use strict";
 /* ================================================================
@@ -601,6 +602,13 @@ function buildGeometry(map) {
   }
   for (const n of niches) polys.push(nichePoly(n));
   map.polys = polys;
+  // The merged outline of all floor shapes (MIT polygon-clipping), so outer
+  // walls can be stroked centred on it with no lines where shapes overlap.
+  map.outline = null;
+  if (window.polygonClipping) {
+    try { map.outline = polygonClipping.union(...polys.map(p => [p.map(([x, y]) => [x, y]).concat([[p[0][0], p[0][1]]])])); }
+    catch (e) { map.outline = null; }
+  }
   const R = 8, mw = W * R, mh = H * R;
   const c = document.createElement("canvas"); c.width = mw; c.height = mh;
   const g = c.getContext("2d");
@@ -1815,9 +1823,9 @@ function renderMap(canvas, map, st, S) {
   for (const poly of map.polys) tracePoly(floorPath, poly, S);
   const k = st.weight / 100;
   const wallW = st.walls === "fine" ? Math.max(1.5, S * 0.07 * k)
-    : st.walls === "double" || st.walls === "stone" ? S * 0.26 * k
+    : st.walls === "double" || st.walls === "stone" ? S * 0.2 * k
     : st.walls === "sketchy" ? S * 0.13 * k : S * 0.17 * k;
-  const edgeW = Math.max(1.2, S * 0.055 * k); // ink edge of outlined and stone walls
+  const edgeW = Math.max(1.2, S * 0.045 * k); // ink edge of outlined and stone walls
 
   // ---- surroundings ----
   ctx.lineCap = "round";
@@ -1984,6 +1992,7 @@ function renderMap(canvas, map, st, S) {
   // so a wall never steps in and out along its length.
   const runs = []; // [x0,y0,x1,y1,1(,"jog")] in squares, ends final (drawn with butt caps)
   const chains = [];
+  const shifts = []; // outer wall stretches moved across their line (see shiftStretch)
   const chainDir = new Map(); // edge key -> offset used, for doors
   // exact floor test against the room and hall outlines (the mask is too coarse for wall thicknesses)
   const polyBox = map.polys.map(p => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const [x, y] of p) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } return [x0, y0, x1, y1]; });
@@ -2011,7 +2020,7 @@ function renderMap(canvas, map, st, S) {
         const vs = openBefore ? 0 : beyond(o, pos, a0 - (sp0[0] > 0 ? 0.3 : 0.5));
         const ve = openAfter ? 0 : beyond(o, pos, a1 + (spN[1] < 1 ? 0.3 : 0.5));
         let dir, jog = false;
-        if (vs && ve && vs !== ve) { dir = vs; jog = true; a1 += halfSq; } // corner to corner: align with the start, turn into the other
+        if (vs && ve && vs !== ve) dir = vs; // corner to corner: settled by the straightening pass below
         else dir = Math.sign(vs + ve);
         chains.push({ o, pos, dir, jog, s0, last, sp0, spN, a0, a1, openBefore, openAfter });
       }
@@ -2052,6 +2061,26 @@ function renderMap(canvas, map, st, S) {
     return [0.15, 0.5, 0.85].every(d => F(end - sgn * 0.12, d) && !F(end + sgn * 0.12, d));
   };
   const neighbourDir = (c, sgn) => { const n = neighbour(c, sgn); return n ? n.dir : null; };
+  // The outer wall continuing the line past this end of chain c, if it is a
+  // short straight stretch (up to 4 squares) that ends in a square corner:
+  // such a stretch can slide across the line to sit in line with the chain.
+  const shiftStretch = (c, sgn) => {
+    const n = neighbour(c, sgn);
+    if (!n || n.kind !== "outer" || n.gap > 0.25) return null;
+    const rock = n.dir, t0 = sgn < 0 ? c.a0 : c.a1;
+    const F = (t, d) => c.o === "h" ? exactFloor(t, c.pos + d) : exactFloor(c.pos + d, t);
+    let t = t0 + sgn * 0.03, steps = 0;
+    for (; steps < 128; steps++, t += sgn / 32) {
+      if (F(t, rock * 0.06)) return null;      // floor on the rock side: not a plain wall
+      if (!F(t, -rock * 0.06)) break;          // the floor ends: a corner (or a curve)
+      if (!F(t, -rock * 0.5)) return null;     // floor too shallow here: a curve or cut corner
+    }
+    if (steps >= 128) return null;
+    let tEnd = t - sgn / 64;
+    if (Math.abs(tEnd - Math.round(tEnd)) < 0.06) tEnd = Math.round(tEnd);
+    const square = [0.06, 0.4, 0.8].every(d => F(tEnd - sgn * 0.05, -rock * d) && !F(tEnd + sgn * 0.05, -rock * d) && !F(tEnd + sgn * 0.05, rock * d));
+    return square ? { o: c.o, pos: c.pos, from: t0, to: tEnd, sgn, len: Math.abs(tEnd - t0) } : null;
+  };
   for (let pass = 0; pass < 4; pass++) {
     let changed = false;
     for (const c of chains) {
@@ -2070,8 +2099,12 @@ function renderMap(canvas, map, st, S) {
         // as a corner, and line up with the end that meets a curve or diagonal
         else {
           c.pinned = true; // outer walls on opposite sides at its two ends
+          const shS = shiftStretch(c, -1), shE = shiftStretch(c, 1);
           const cs = squareCorner(c, -1), ce = squareCorner(c, 1);
-          if (cs && !ce) want = ne; else if (ce && !cs) want = ns;
+          // best: slide a short outer stretch into line, keeping the other end aligned
+          if (shS && !shE) want = ne; else if (shE && !shS) want = ns;
+          else if (shS && shE) want = shS.len <= shE.len ? ne : ns;
+          else if (cs && !ce) want = ne; else if (ce && !cs) want = ns;
           else if (!cs && !ce) want = 0; // curves at both ends: centre it so both blend alike
         }
       }
@@ -2131,7 +2164,10 @@ function renderMap(canvas, map, st, S) {
       let want;
       if (ds !== null && de !== null && ds !== de) {
         const cs = fS.kind === "outer" && squareCorner(first, -1), ce = fE.kind === "outer" && squareCorner(last, 1);
-        if (cs && !ce) want = de; else if (ce && !cs) want = ds;
+        const shS = shiftStretch(first, -1), shE = shiftStretch(last, 1);
+        if (shS && !shE) want = de; else if (shE && !shS) want = ds;
+        else if (shS && shE) want = shS.len <= shE.len ? de : ds;
+        else if (cs && !ce) want = de; else if (ce && !cs) want = ds;
         else want = (first.a1 - first.a0) >= (last.a1 - last.a0) ? ds : de;
         if (want === 0) want = ds || de;
       } else want = ds !== null ? ds : de !== null ? de : group.reduce((a, g) => (g.a1 - g.a0) > (a.a1 - a.a0) ? g : a).dir;
@@ -2144,10 +2180,17 @@ function renderMap(canvas, map, st, S) {
     if (c.jog) continue;
     for (const sgn of [-1, 1]) {
       const n = neighbour(c, sgn);
-      if (n && n.kind === "outer" && n.gap < 0.2 && n.dir !== c.dir && squareCorner(c, sgn)) c[sgn < 0 ? "turnStart" : "turnEnd"] = true;
+      if (!n || n.kind !== "outer" || n.gap >= 0.2 || n.dir === c.dir) continue;
+      const sh = c.dir !== 0 ? shiftStretch(c, sgn) : null;
+      if (sh) shifts.push({ ...sh, side: c.dir }); // slide the outer stretch into line instead of stepping
+      else if (squareCorner(c, sgn)) c[sgn < 0 ? "turnStart" : "turnEnd"] = true;
     }
   }
 
+  // Walls are drawn centred on the grid (outer walls on the room edges, inner
+  // walls on the line between rooms), so every inner wall sits on its line.
+  for (const c of chains) { c.dir = 0; c.turnStart = c.turnEnd = false; }
+  shifts.length = 0;
   for (const c of chains) {
     const { o, pos, dir, jog, s0, last, sp0, spN, openBefore, openAfter } = c;
     let { a0, a1 } = c;
@@ -2186,7 +2229,7 @@ function renderMap(canvas, map, st, S) {
     if (c.jog || c.turnStart || c.turnEnd) run.push("jog");
     runs.push(run);
   }
-  map._halfSq = halfSq; map._exactFloor = exactFloor; map._chains = chains;
+  map._halfSq = halfSq; map._exactFloor = exactFloor; map._chains = chains; map._shifts = shifts;
   const dirOf = (o, pos, i) => {
     const k = o + pos + "," + i;
     if (chainDir.has(k)) return chainDir.get(k);
@@ -2219,17 +2262,51 @@ function renderMap(canvas, map, st, S) {
   for (const [x0, y0, x1, y1, wm] of runs) { const rp = wm === 2 ? thickPath : runPath; rp.moveTo(x0 * S, y0 * S); rp.lineTo(x1 * S, y1 * S); }
   // The wall shape of thickness `w`, shrunk by `inset` on every side.
   // `extraOuter`/`extraInner` draw additional marks before the floor is cut away / after.
+  // Scratch canvases for the centred outer wall band.
+  const scratchA = document.createElement("canvas"), scratchB = document.createElement("canvas");
+  scratchA.width = scratchB.width = canvas.width; scratchA.height = scratchB.height = canvas.height;
+  const sa = scratchA.getContext("2d"), sb = scratchB.getContext("2d");
+  // Wall shape of total thickness `w` centred on the grid, shrunk by `inset`
+  // on each side. The outer band is the points within r of the floor's edge:
+  // (rock grown by r) inside (floor grown by r). Floor grows exactly with a
+  // stroke; rock grows by stamping its mask in a ring of offsets.
+  let outlinePath = null;
+  if (map.outline) { outlinePath = new Path2D(); for (const poly of map.outline) for (const ring of poly) tracePoly(outlinePath, ring.slice(0, -1), S); }
   const wallShape = (w, inset, color, extraOuter, extraInner) => {
     clearLayer();
-    lg.strokeStyle = color; lg.fillStyle = color; lg.lineJoin = "miter"; lg.miterLimit = 4; lg.lineCap = "butt";
-    lg.lineWidth = Math.max(0.5, (w - inset) * 2); lg.stroke(floorPath);
+    const r = Math.max(0.5, w / 2 - inset);
+    if (outlinePath) {
+      lg.strokeStyle = color; lg.fillStyle = color; lg.lineJoin = "miter"; lg.miterLimit = 4; lg.lineCap = "butt";
+      lg.lineWidth = r * 2; lg.stroke(outlinePath);
+      if (extraOuter) extraOuter();
+      lg.lineWidth = r * 2; lg.stroke(runPath);
+      lg.lineWidth = r * 2 + w; lg.stroke(thickPath);
+      if (extraInner) extraInner();
+      return;
+    }
+    // fallback without the library: grow the rock mask
+    sa.setTransform(1, 0, 0, 1, 0, 0); sa.globalCompositeOperation = "source-over"; sa.clearRect(0, 0, scratchA.width, scratchA.height);
+    sa.fillStyle = "#000"; sa.fillRect(0, 0, scratchA.width, scratchA.height);
+    sa.setTransform(base); sa.globalCompositeOperation = "destination-out"; sa.fill(floorPath);
+    lg.setTransform(1, 0, 0, 1, 0, 0);
+    // grow by r in two passes of 4 (axis, then diagonal at r/sqrt2 each way):
+    // together they cover an octagon within a pixel of the circle at wall widths
+    const grow = (dx, dy, n) => { sb.setTransform(1, 0, 0, 1, 0, 0); sb.clearRect(0, 0, scratchB.width, scratchB.height); sb.drawImage(scratchA, 0, 0);
+      for (let k2 = 0; k2 < n; k2++) { const a2 = k2 / n * Math.PI * 2 + Math.atan2(dy, dx); sb.drawImage(scratchA, Math.cos(a2) * Math.hypot(dx, dy), Math.sin(a2) * Math.hypot(dx, dy)); }
+      sa.setTransform(1, 0, 0, 1, 0, 0); sa.globalCompositeOperation = "copy"; sa.drawImage(scratchB, 0, 0); sa.globalCompositeOperation = "source-over"; };
+    const r1 = r * 0.5412; // two octagon steps of this size reach r along both axes and diagonals
+    grow(r1, 0, 8); grow(r1 * Math.cos(Math.PI / 8), r1 * Math.sin(Math.PI / 8), 8);
+    lg.drawImage(scratchA, 0, 0);
+    sb.setTransform(1, 0, 0, 1, 0, 0); sb.clearRect(0, 0, scratchB.width, scratchB.height);
+    sb.setTransform(base); sb.fillStyle = "#000"; sb.strokeStyle = "#000"; sb.lineJoin = "miter"; sb.miterLimit = 4;
+    sb.fill(floorPath); sb.lineWidth = r * 2; sb.stroke(floorPath);
+    lg.globalCompositeOperation = "destination-in"; lg.drawImage(scratchB, 0, 0);
+    lg.globalCompositeOperation = "source-in"; lg.fillStyle = color; lg.fillRect(0, 0, layer.width, layer.height);
+    lg.globalCompositeOperation = "source-over"; lg.setTransform(base);
+    lg.strokeStyle = color; lg.fillStyle = color; lg.lineJoin = "miter"; lg.miterLimit = 4;
     if (extraOuter) extraOuter();
-    lg.globalCompositeOperation = "destination-out";
-    lg.fill(floorPath);
-    if (inset > 0) { lg.lineWidth = inset * 2; lg.stroke(floorPath); }
-    lg.globalCompositeOperation = "source-over";
-    lg.strokeStyle = color; lg.lineCap = "butt"; lg.lineWidth = Math.max(0.5, w - inset * 2); lg.stroke(runPath);
-    lg.lineWidth = Math.max(0.5, w * 2 - inset * 2); lg.stroke(thickPath);
+    lg.strokeStyle = color; lg.lineCap = "butt"; lg.lineWidth = r * 2; lg.stroke(runPath);
+    lg.lineWidth = r * 2 + w; lg.stroke(thickPath);
     if (extraInner) extraInner();
   };
   if (st.walls === "ink" || st.walls === "fine") {
@@ -2250,7 +2327,7 @@ function renderMap(canvas, map, st, S) {
           while (t < L) {
             const X = (a[0] + ux * t) * S, Y = (a[1] + uy * t) * S;
             const outside = !map.floorAt(a[0] + ux * t + nx * wallW * 0.5 / S, a[1] + uy * t + ny * wallW * 0.5 / S);
-            if (outside) { lg.moveTo(X, Y); lg.lineTo(X + nx * wallW, Y + ny * wallW); }
+            if (outside) { lg.moveTo(X - nx * wallW / 2, Y - ny * wallW / 2); lg.lineTo(X + nx * wallW / 2, Y + ny * wallW / 2); }
             t += rr.range(0.38, 0.62);
           }
           t -= L;
@@ -2277,7 +2354,7 @@ function renderMap(canvas, map, st, S) {
         lg.lineWidth = Math.max(1, S * 0.045 * k);
         lg.beginPath();
         for (const poly of map.polys) {
-          const n = poly.length, amp = n > 12 ? 0.012 : 0.045, off = wallW * 0.55;
+          const n = poly.length, amp = n > 12 ? 0.012 : 0.045, off = 0;
           const norm = i => { const a = poly[(i + n) % n], b = poly[(i + 1 + n) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[1] - a[1]) / L, -(b[0] - a[0]) / L]; };
           const pts = [];
           for (let i = 0; i < n; i++) {
@@ -2316,7 +2393,7 @@ function renderMap(canvas, map, st, S) {
         lg.stroke();
       }
     };
-    wallShape(S * 0.09 * k, 0, pal.ink, sketchOuter, sketchInner);
+    wallShape(S * 0.1 * k, 0, pal.ink, sketchOuter, sketchInner);
     stamp();
   }
 
@@ -2325,7 +2402,7 @@ function renderMap(canvas, map, st, S) {
   const dw = Math.max(1, S * 0.05);
   for (const d of map.doors) {
     const v = d.o === "v";
-    const shift = dirOf(d.o, v ? d.x : d.y, v ? d.y : d.x) * wallW / 2; // sit in the wall, not on the grid line
+    const shift = 0; // walls (and so doors) sit on the grid line
     const cx = v ? d.x * S + shift : (d.x + 0.5) * S, cy = v ? (d.y + 0.5) * S : d.y * S + shift;
     const along = S * 0.62, across = Math.max(S * 0.28, wallW + S * 0.1);
     const rw = v ? across : along, rh = v ? along : across;
@@ -2357,6 +2434,17 @@ function renderMap(canvas, map, st, S) {
 
   // ---- furnishings ----
   {
+    // keep furnishings off outer wall stretches that were moved onto the floor
+    ctx.save();
+    if (shifts.length) {
+      const keep = new Path2D(); keep.rect(-S, -S, (W + 2) * S, (H + 2) * S);
+      const wq = wallW / S;
+      for (const sh of shifts) {
+        const a0 = Math.min(sh.from, sh.to) - wq, a1 = Math.max(sh.from, sh.to) + wq, c0 = Math.min(sh.pos, sh.pos + sh.side * wq), c1 = Math.max(sh.pos, sh.pos + sh.side * wq);
+        if (sh.o === "h") keep.rect(a0 * S, c0 * S, (a1 - a0) * S, (c1 - c0) * S); else keep.rect(c0 * S, a0 * S, (c1 - c0) * S, (a1 - a0) * S);
+      }
+      ctx.clip(keep, "evenodd");
+    }
     for (const f of map.features) {
       if (!st.decor && f.type !== "key") continue;
       if (f.type === "column") {
@@ -2427,6 +2515,7 @@ function renderMap(canvas, map, st, S) {
         ctx.beginPath(); ctx.arc(x, y, S * 0.22, 0, Math.PI * 2); ctx.fillStyle = pal.ink; ctx.globalAlpha = 0.75; ctx.fill(); ctx.globalAlpha = 1;
       }
     }
+    ctx.restore();
   }
 
   // ---- room numbers ----

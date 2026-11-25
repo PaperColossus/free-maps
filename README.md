@@ -12,10 +12,10 @@ Download them from the [Releases](https://github.com/PaperColossus/free-maps/rel
 
 ## Dungeon Sketcher (experimental)
 
-[`dungeon-generator/index.html`](dungeon-generator/index.html) is a browser-based dungeon map generator. Open the file in a browser; it needs no build step or server.
+[`dungeon-generator/index.html`](dungeon-generator/index.html) is a browser-based dungeon map generator. Open the file in a browser; it needs no build step or server. It loads the MIT-licensed polygon-clipping library from jsDelivr and still works, more slowly, without it.
 
 - **Layout:** seed, number of rooms, symmetry (asymmetric, partly symmetric, symmetric), paths (branching, or looping with a main loop that may be gated by a locked door and key or a secret door), room size range, room shapes (circles with optional pools, half circles and apses, octagons, hexagons, crosses, T and L shapes, caves), niches, water, extra loops, and door mix. Choose how rooms connect: rooms that share walls, rooms joined by halls, a mix of both, or scattered rooms with winding halls. Hall length and shape are adjustable.
-- **Look:** wall style (solid ink, sketchy, outlined, stone blocks, fine line), floor (plain, flagstones, planks, checker, cobbles), grid (lines, dots, none), surroundings (hatching, cross-hatch, stipple, solid rock, bare) and palette. Outer walls sit outside the floor, so a one-square hall keeps a full square of floor. Shadows can be cast from a chosen light direction. Changing the look never changes the layout.
+- **Look:** wall style (solid ink, sketchy, outlined, stone blocks, fine line), floor (plain, flagstones, planks, checker, cobbles), grid (lines, dots, none), surroundings (hatching, cross-hatch, stipple, solid rock, bare) and palette. Walls are centred on the grid. Shadows can be cast from a chosen light direction. Changing the look never changes the layout.
 - **Export:** PNG at 70 to 200 px per square.
 
 The hatching technique (Poisson-disc points, Voronoi cells, a cluster of parallel strokes per cell) follows Watabou's approach for One Page Dungeon, as described by [Red Blob Games](https://www.redblobgames.com/x/1947-dyson-hatching/). The code here is a separate implementation. Room-shape ideas drawn from Brogue CE, Dungeon Crawl Stone Soup and NetHack are listed in [`dungeon-generator/DESIGN-NOTES.md`](dungeon-generator/DESIGN-NOTES.md).
