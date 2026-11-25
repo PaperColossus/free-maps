@@ -2060,9 +2060,12 @@ function renderMap(canvas, map, st, S) {
       let want = c.dir;
       if (ns !== null && ne !== null) {
         if (ns === ne) want = ns;
-        // disagreement: the two sides of a doorway must line up; the other
-        // end turns its corner instead
-        else if (c.openBefore !== c.openAfter) want = c.openBefore ? ns : ne;
+        // disagreement across an open doorway: the gap doesn't need its two
+        // sides to match, so follow the outer wall this piece actually joins
+        else if (c.openBefore !== c.openAfter) {
+          const solid = c.openBefore ? nE : nS, gapSide = c.openBefore ? nS : nE;
+          want = solid.kind === "outer" ? solid.dir : gapSide.dir;
+        }
         // otherwise put the unavoidable step at a square corner, where it reads
         // as a corner, and line up with the end that meets a curve or diagonal
         else {
@@ -2098,6 +2101,9 @@ function renderMap(canvas, map, st, S) {
       for (const sgn of [-1, 1]) {
         const n = neighbour(c, sgn);
         if (!n || n.kind !== "inner" || n.dir === c.dir || n.mate.sliver) continue;
+        // pieces each anchored to an outer wall at their far end keep their own side
+        const far = (ch, s2) => { const f = neighbour(ch, s2); return f && f.kind === "outer"; };
+        if (far(c, -sgn) && far(n.mate, sgn)) continue;
         const longer = (n.mate.a1 - n.mate.a0) > (c.a1 - c.a0) ? n.mate : c, shorter = longer === c ? n.mate : c;
         if (shorter.dir !== longer.dir) { shorter.dir = longer.dir; changed = true; }
       }
