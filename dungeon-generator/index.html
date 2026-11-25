@@ -369,7 +369,21 @@ function inPoly(pts, px, py) {
   }
   return c;
 }
-function inRoom(r, px, py) { for (const p of r.poly) if (inPoly(p, px, py)) return true; return false; }
+function inRoom(r, px, py) {
+  if (r.holes && r.holes.some(hp => inPoly(hp, px, py))) return false;
+  for (const p of r.poly) if (inPoly(p, px, py)) return true;
+  return false;
+}
+const arcPts = (cx, cy, R, a0, a1, n) => { const pts = []; for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; pts.push([cx + Math.cos(a) * R, cy + Math.sin(a) * R]); } return pts; };
+const circlePts = (cx, cy, R) => { const n = Math.max(32, Math.round(R * 22)), pts = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; pts.push([cx + Math.cos(a) * R, cy + Math.sin(a) * R]); } return pts; };
+// Solid centres ("ring" rooms): the floor runs round a block of rock.
+function roomHoles(r) {
+  const sh = r.shape, hole = sh && sh.hole;
+  if (!hole) return [];
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+  if (hole.kind === "round") return [orient(circlePts(cx, cy, hole.s / 2))];
+  return [orient([[cx - hole.s / 2, cy - hole.s / 2], [cx + hole.s / 2, cy - hole.s / 2], [cx + hole.s / 2, cy + hole.s / 2], [cx - hole.s / 2, cy + hole.s / 2]])];
+}
 // A room's floor as a list of polygons (overlapping parts merge when filled).
 function roomPoly(r) {
   const { x, y, w, h } = r, sh = r.shape || { type: "rect" };
@@ -385,8 +399,33 @@ function roomPoly(r) {
       return orient(pts);
     });
   }
+  if (sh.type === "quatrefoil") { // a square core with a half-circle lobe on each side
+    const cx = x + w / 2, cy = y + h / 2, rl = w / 4, k = w / 2;
+    return [orient([[cx - k / 2, cy - k / 2], [cx + k / 2, cy - k / 2], [cx + k / 2, cy + k / 2], [cx - k / 2, cy + k / 2]]),
+      ...[[0, -1], [1, 0], [0, 1], [-1, 0]].map(([dx, dy]) => orient(circlePts(cx + dx * k / 2, cy + dy * k / 2, rl)))];
+  }
+  if (sh.type === "keyhole") { // a round chamber with a straight neck leading out of one side
+    const [nx, ny] = DIRS[sh.side], D = sh.d, nw = sh.nw;
+    const horiz = nx !== 0, along = horiz ? w : h, cxs = x + w / 2, cys = y + h / 2;
+    // circle sits at the end away from the neck
+    const cc = horiz ? [cxs - nx * (along / 2 - D / 2), cys] : [cxs, cys - ny * (along / 2 - D / 2)];
+    const nb = horiz ? [[cc[0], cys - nw / 2], [nx > 0 ? x + w : x, cys - nw / 2], [nx > 0 ? x + w : x, cys + nw / 2], [cc[0], cys + nw / 2]]
+      : [[cxs - nw / 2, cc[1]], [cxs + nw / 2, cc[1]], [cxs + nw / 2, ny > 0 ? y + h : y], [cxs - nw / 2, ny > 0 ? y + h : y]];
+    return [orient(circlePts(cc[0], cc[1], D / 2)), orient(nb)];
+  }
   let pts;
-  if (sh.type === "hex") { // flat sides on two opposite faces, points on the other two
+  if (sh.type === "capsule") { // a long hall with both ends rounded
+    const horiz = w >= h, R = (horiz ? h : w) / 2;
+    if (horiz) pts = [[x + R, y], [x + w - R, y], ...arcPts(x + w - R, y + R, R, -Math.PI / 2, Math.PI / 2, 20).slice(1, -1), [x + w - R, y + h], [x + R, y + h], ...arcPts(x + R, y + R, R, Math.PI / 2, Math.PI * 1.5, 20).slice(1, -1)];
+    else pts = [[x + w, y + R], [x + w, y + h - R], ...arcPts(x + R, y + h - R, R, 0, Math.PI, 20).slice(1, -1), [x, y + h - R], [x, y + R], ...arcPts(x + R, y + R, R, Math.PI, Math.PI * 2, 20).slice(1, -1)];
+  } else if (sh.type === "roundrect") { // corners rounded off by c squares
+    const c = sh.c;
+    pts = [...arcPts(x + w - c, y + c, c, -Math.PI / 2, 0, 8), ...arcPts(x + w - c, y + h - c, c, 0, Math.PI / 2, 8),
+      ...arcPts(x + c, y + h - c, c, Math.PI / 2, Math.PI, 8), ...arcPts(x + c, y + c, c, Math.PI, Math.PI * 1.5, 8)];
+  } else if (sh.type === "diamond") { // a square turned 45 degrees, its points cut flat one square wide for doors
+    const cx = x + w / 2, cy = y + h / 2, f = 0.5;
+    pts = [[cx - f, y], [cx + f, y], [x + w, cy - f], [x + w, cy + f], [cx + f, y + h], [cx - f, y + h], [x, cy + f], [x, cy - f]];
+  } else if (sh.type === "hex") { // flat sides on two opposite faces, points on the other two
     const c = sh.c;
     pts = sh.flat === "ns"
       ? [[x + c, y], [x + w - c, y], [x + w, y + h / 2], [x + w - c, y + h], [x + c, y + h], [x, y + h / 2]]
@@ -422,6 +461,8 @@ function roomLabel(r) {
   if (sh && sh.type === "cave") return [r.x + sh.circles[0].x, r.y + sh.circles[0].y];
   if (sh && sh.type === "bars") return [r.x + sh.vb.x + sh.vb.w / 2, r.y + sh.hb.y + sh.hb.h / 2];
   if (sh && sh.pool) return [r.x + r.w / 2, r.y + r.h / 2 - sh.pool - 0.75];
+  if (sh && sh.hole) return [r.x + r.w / 2, r.y + (r.h - sh.hole.s) / 4 + 0.15]; // in the walk above the solid centre
+  if (sh && sh.type === "keyhole") { const [nx, ny] = DIRS[sh.side], al = nx !== 0 ? r.w : r.h; return [r.x + r.w / 2 - nx * (al / 2 - sh.d / 2), r.y + r.h / 2 - ny * (al / 2 - sh.d / 2)]; }
   if (!sh || sh.type !== "ell") return [r.x + r.w / 2, r.y + r.h / 2];
   const top = sh.corner === 0 || sh.corner === 1, left = sh.corner === 0 || sh.corner === 3;
   const band = (r.h - sh.b) * r.w, col = (r.w - sh.a) * r.h; // full-width band vs full-height column
@@ -437,7 +478,7 @@ function doorOK(r, x, y, d) {
   if (ny > 0 && y !== r.y + r.h - 1) return false;
   if (ny < 0 && y !== r.y) return false;
   const ex = x + 0.5 + nx * 0.38, ey = y + 0.5 + ny * 0.38, tx = -ny, ty = nx;
-  const offs = (nx !== 0 ? r.h : r.w) < 3 ? [0] : [-0.6, 0, 0.6];
+  const offs = (nx !== 0 ? r.h : r.w) < 3 ? [0] : r.shape && r.shape.type === "diamond" ? [-0.4, 0, 0.4] : [-0.6, 0, 0.6];
   for (const o of offs) if (!inRoom(r, ex + tx * o, ey + ty * o)) return false;
   return true;
 }
@@ -483,7 +524,8 @@ function pickShape(rng, w, h, variety, first) {
   if (Math.max(w, h) >= 4) opts.push("circle");
   if (Math.min(w, h) >= 3) opts.push("apse");
   if (Math.min(w, h) >= 4) opts.push("chamfer", "ell", "hex");
-  if (Math.min(w, h) >= 5) opts.push("bars", "bars", "cave");
+  if (Math.min(w, h) >= 5) opts.push("bars", "bars", "cave", "capsule", "roundrect", "diamond");
+  if (Math.max(w, h) >= 6) opts.push("quatrefoil", "keyhole", "ring");
   if (!opts.length) return rect;
   const t = rng.pick(opts);
   if (t === "circle") {
@@ -493,6 +535,24 @@ function pickShape(rng, w, h, variety, first) {
     return [n, n, { type: "circle", pool }];
   }
   if (t === "cave") return [w + 1, h + 1, makeCave(rng, w + 1, h + 1)];
+  if (t === "capsule") { // long and narrow: span odd so doors can sit mid-end
+    let span = Math.min(w, h); if (span % 2 === 0) span++; span = Math.max(3, Math.min(span, 7));
+    const along = Math.max(Math.max(w, h), span + 2);
+    return rng.chance(0.5) ? [along, span, { type: "capsule" }] : [span, along, { type: "capsule" }];
+  }
+  if (t === "roundrect") return [w, h, { type: "roundrect", c: Math.min(w, h) >= 7 && rng.chance(0.5) ? 2 : 1 }];
+  if (t === "diamond") { let n = Math.max(w, h, 7); if (n % 2 === 0) n++; return [n, n, { type: "diamond" }]; }
+  if (t === "quatrefoil") { let n = Math.max(w, h, 7); if (n % 2 === 0) n++; return [n, n, { type: "quatrefoil" }]; }
+  if (t === "keyhole") {
+    let d = Math.max(Math.min(w, h), 7); if (d % 2 === 0) d++;
+    const side = rng.int(0, 3), along = d + rng.int(2, 3);
+    return side % 2 === 0 ? [along, d, { type: "keyhole", side, d, nw: 3 }] : [d, along, { type: "keyhole", side, d, nw: 3 }];
+  }
+  if (t === "ring") { // a walk around a solid centre, square or round
+    if (rng.chance(0.5)) { let n = Math.max(w, h, 9); if (n % 2 === 0) n++; return [n, n, { type: "circle", hole: { kind: "round", s: n - 6 } }]; }
+    let a = Math.max(w, 7), b = Math.max(h, 7); if (a % 2 === 0) a++; if (b % 2 === 0) b++;
+    return [a, b, { type: "rect", hole: { kind: "square", s: Math.min(a, b) - 4 } }];
+  }
   if (t === "hex") {
     const flat = rng.chance(0.5) ? "ns" : "ew";
     const across = flat === "ns" ? h : w; // the pointed direction's half-height sets the slant (~30 degrees)
@@ -564,7 +624,8 @@ function buildGeometry(map) {
   const { W, H, cells, rooms, doors, niches } = map;
   const byId = new Map(rooms.map(r => [r.id, r]));
   const polys = [];
-  for (const r of rooms) { r.poly = roomPoly(r); [r.lx, r.ly] = roomLabel(r); polys.push(...r.poly); }
+  const holes = [];
+  for (const r of rooms) { r.poly = roomPoly(r); r.holes = roomHoles(r); holes.push(...r.holes); [r.lx, r.ly] = roomLabel(r); polys.push(...r.poly); }
   const built = i => cells[i] === -1 && !(map.tunnels && map.tunnels[i]);
   for (let y = 0; y < H; y++) { let x = 0; while (x < W) { if (built(y * W + x)) { const s0 = x; while (x < W && built(y * W + x)) x++; polys.push(orient([[s0, y], [x, y], [x, y + 1], [s0, y + 1]])); } else x++; } }
   if (map.tunnels) { // rough natural tunnels: one lumpy blob per square, overlapping its neighbours
@@ -602,12 +663,17 @@ function buildGeometry(map) {
     }
   }
   for (const n of niches) polys.push(nichePoly(n));
-  map.polys = polys;
+  map.polys = polys; map.holes = holes;
+  map.inHole = (x, y) => holes.some(hp => inPoly(hp, x, y));
   // The merged outline of all floor shapes (MIT polygon-clipping), so outer
   // walls can be stroked centred on it with no lines where shapes overlap.
   map.outline = null;
   if (window.polygonClipping) {
-    try { map.outline = polygonClipping.union(...polys.map(p => [p.map(([x, y]) => [x, y]).concat([[p[0][0], p[0][1]]])])); }
+    const ring = p => [p.map(([x, y]) => [x, y]).concat([[p[0][0], p[0][1]]])];
+    try {
+      map.outline = polygonClipping.union(...polys.map(ring));
+      if (holes.length) map.outline = polygonClipping.difference(map.outline, ...holes.map(ring));
+    }
     catch (e) { map.outline = null; }
   }
   const R = 8, mw = W * R, mh = H * R;
@@ -615,6 +681,7 @@ function buildGeometry(map) {
   const g = c.getContext("2d");
   const path = new Path2D(); for (const p of polys) tracePoly(path, p, R);
   g.fillStyle = "#000"; g.fill(path);
+  if (holes.length) { const hp = new Path2D(); for (const p of holes) tracePoly(hp, p, R); g.globalCompositeOperation = "destination-out"; g.fill(hp); g.globalCompositeOperation = "source-over"; }
   const px = g.getImageData(0, 0, mw, mh).data, mask = new Uint8Array(mw * mh);
   for (let i = 0; i < mask.length; i++) mask[i] = px[i * 4 + 3] >= 128 ? 1 : 0;
   Object.assign(map, { R, mw, mh, mask, floorD2: edt(mask, mw, mh, 1) });
@@ -842,7 +909,7 @@ function generate(o) {
   const twinOf = r => r.axis ? r : r.twin ? rooms[r.twin - 1] : null;
   function mirrorShape(sh, w) {
     const m = JSON.parse(JSON.stringify(sh));
-    if (m.type === "apse") m.side = mDir(m.side);
+    if (m.type === "apse" || m.type === "keyhole") m.side = mDir(m.side);
     else if (m.type === "ell") m.corner = [1, 0, 3, 2][m.corner];
     else if (m.type === "bars") m.vb.x = w - m.vb.x - m.vb.w;
     else if (m.type === "cave") m.circles.forEach(c => {
@@ -856,6 +923,7 @@ function generate(o) {
   function axisShape(w, h, sh) {
     if (sh.type === "ell") sh = { type: "rect" };
     if (sh.type === "apse" && sh.side % 2 === 0) { sh = { type: "apse", side: rng.chance(0.5) ? 1 : 3 }; [w, h] = [h, w]; }
+    if (sh.type === "keyhole" && sh.side % 2 === 0) { sh = { ...sh, side: rng.chance(0.5) ? 1 : 3 }; [w, h] = [h, w]; }
     if (w % 2 === 0) w++;
     if (sh.type === "bars") { let vw = sh.vb.w; if ((w - vw) % 2) vw = vw + 1 <= w - 2 ? vw + 1 : vw - 1; sh = { type: "bars", hb: sh.hb, vb: { x: (w - vw) / 2, w: vw } }; }
     if (sh.type === "cave") sh = { type: "cave", circles: sh.circles.concat(mirrorShape({ type: "cave", circles: sh.circles }, w).circles) };
@@ -1603,7 +1671,11 @@ function furnish(map, seed) {
   for (const r of rooms) {
     const t = r.shape.type;
     if (r.shape.pool) feats.push({ type: "pool", x: r.x + r.w / 2, y: r.y + r.h / 2, r: r.shape.pool });
-    if (t === "circle" && r.w >= 7 && rng.chance(r.shape.pool ? 0.85 : 0.6)) {
+    if (r.shape.hole) { /* the solid centre is the feature */ }
+    else if ((t === "quatrefoil" || t === "keyhole") && rng.chance(0.6)) {
+      const [fx, fy] = t === "keyhole" ? [r.lx, r.ly + 1.2] : [r.x + r.w / 2, r.y + r.h / 2 + 1.2];
+      feats.push({ type: rng.chance(0.5) ? "statue" : "well", x: fx, y: fy });
+    } else if (t === "circle" && r.w >= 7 && rng.chance(r.shape.pool ? 0.85 : 0.6)) {
       const n = r.w >= 9 ? 8 : 6, R = r.shape.pool ? (r.w / 2 + r.shape.pool) / 2 + 0.1 : r.w / 2 - 1.1, off = rng.chance(0.5) ? Math.PI / n : 0;
       for (let i = 0; i < n; i++) { const a = off + i / n * Math.PI * 2; feats.push({ type: "column", x: r.x + r.w / 2 + Math.cos(a) * R, y: r.y + r.h / 2 + Math.sin(a) * R }); }
     } else if ((t === "rect" || (t === "chamfer" && r.shape.c === 1)) && r.w >= 5 && r.h >= 5 && rng.chance(0.45)) {
@@ -1664,7 +1736,7 @@ function addLakes(map, seed, amount) {
   if (amount <= 0) return lakes;
   const rng = RNG(seed + "|lakes");
   for (const r of map.rooms) {
-    if (r.shape.pool || Math.min(r.w, r.h) < 5) continue;
+    if (r.shape.pool || r.shape.hole || Math.min(r.w, r.h) < 5) continue;
     const cave = r.shape.type === "cave";
     if (!rng.chance(Math.min(1, amount * (cave ? 1.8 : 1.1)))) continue;
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -1795,8 +1867,8 @@ function hatchCells(map, depth, size) {
   const spacing = size;                 // closest two cluster centres may be, in squares
   const { pts, grid, gw, gh, cs } = bandPoints(map, rng, spacing, (x, y) => {
     const d = dist(x, y);
-    return d > 0 && d <= depth * (0.72 + 0.42 * rng.f()); // ragged outer edge
-  }, (x, y) => dist(x, y) <= depth * 1.14 + 0.71);
+    return d > 0 && (d <= depth * (0.72 + 0.42 * rng.f()) || map.inHole(x, y)); // ragged outer edge; solid centres filled
+  }, (x, y) => dist(x, y) <= depth * 1.14 + 0.71 || map.inHole(x, y));
   const gap = Math.max(0.022, 0.045 * Math.min(1, size / 0.62)), maxR = spacing * 1.53, reach = Math.ceil((maxR * 2) / cs);
   const cells = [];
   for (let i = 0; i < pts.length; i++) {
@@ -1872,9 +1944,11 @@ function stippleDots(map, depth) {
   // dense against the wall, thinning out with distance; dots never touch
   const { pts } = bandPoints(map, rng, 0.11, (x, y) => {
     const d = dist(x, y);
-    if (d <= 0 || d > depth) return false;
+    if (d <= 0) return false;
+    if (map.inHole(x, y)) return rng.f() < 0.5;
+    if (d > depth) return false;
     return rng.f() < Math.pow(1 - d / depth, 1.6);
-  }, (x, y) => dist(x, y) <= depth + 0.71);
+  }, (x, y) => dist(x, y) <= depth + 0.71 || map.inHole(x, y));
   for (const p of pts) p.r = 0.022 + rng.f() * 0.022;
   map._stipple[depth] = pts;
   return pts;
@@ -1906,6 +1980,7 @@ function shadowLayer(map, st, runs, wallSq, k, pal) {
   const fp = new Path2D(); for (const p of map.polys) tracePoly(fp, p, R);
   g.fill(fp);
   g.globalCompositeOperation = "source-over";
+  if (map.holes && map.holes.length) { const hp = new Path2D(); for (const p of map.holes) tracePoly(hp, p, R); g.fillStyle = "#000"; g.fill(hp); }
   g.strokeStyle = "#000"; g.lineCap = "butt"; g.lineWidth = Math.max(1, wallSq * R);
   for (const wm of [1, 2]) {
     g.lineWidth = Math.max(1, wallSq * R * wm);
@@ -1974,7 +2049,9 @@ function renderMap(canvas, map, st, S) {
   }
 
   const floorPath = new Path2D();
-  for (const poly of map.polys) tracePoly(floorPath, poly, S);
+  if (map.outline) { // merged outline: outer rings one way, holes the other, so non-zero fills leave holes empty
+    for (const poly of map.outline) poly.forEach((ring, ri) => { const pts = orient(ring.slice(0, -1).map(([x, y]) => [x, y])); tracePoly(floorPath, ri ? pts.reverse() : pts, S); });
+  } else for (const poly of map.polys) tracePoly(floorPath, poly, S);
   const k = st.weight / 100;
   const wallW = st.walls === "fine" ? Math.max(1.5, S * 0.07 * k)
     : st.walls === "double" || st.walls === "stone" ? S * 0.2 * k
@@ -2150,7 +2227,7 @@ function renderMap(canvas, map, st, S) {
   const chainDir = new Map(); // edge key -> offset used, for doors
   // exact floor test against the room and hall outlines (the mask is too coarse for wall thicknesses)
   const polyBox = map.polys.map(p => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const [x, y] of p) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } return [x0, y0, x1, y1]; });
-  const exactFloor = (x, y) => map.polys.some((p, n) => { const b = polyBox[n]; return x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3] && inPoly(p, x, y); });
+  const exactFloor = (x, y) => !(map.holes && map.holes.some(h2 => inPoly(h2, x, y))) && map.polys.some((p, n) => { const b = polyBox[n]; return x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3] && inPoly(p, x, y); });
   const isOpen = (o, pos, i) => openDoor.has(o + (o === "h" ? i + "," + pos : pos + "," + i));
   const beyond = (o, pos, t) => { // which side has floor just past a chain end: -1 (Q only), +1 (P only), 0
     // right against the line: a curve pulling away from it doesn't count
