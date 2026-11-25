@@ -2013,6 +2013,81 @@ function renderMap(canvas, map, st, S) {
         let dir, jog = false;
         if (vs && ve && vs !== ve) { dir = vs; jog = true; a1 += halfSq; } // corner to corner: align with the start, turn into the other
         else dir = Math.sign(vs + ve);
+        chains.push({ o, pos, dir, jog, s0, last, sp0, spN, a0, a1, openBefore, openAfter });
+      }
+    }
+  }
+
+  // ---- polish: straighten walls along each grid line ----
+  // Walls that continue each other along a line (end to end, across a
+  // doorway, or into a room's outer wall) should sit on the same side of it.
+  // Look past each end for the next wall on the line; an inner wall takes the
+  // side its neighbours agree on. Outer walls follow the floor and don't move,
+  // so they anchor the result; a few passes let corrections carry along.
+  const byLine = new Map();
+  for (const c of chains) { const k = c.o + c.pos; if (!byLine.has(k)) byLine.set(k, []); byLine.get(k).push(c); }
+  // The next wall past one end of chain c: { dir, kind: "inner"|"outer", gap, mate } or null.
+  const neighbour = (c, sgn) => {
+    const from = sgn < 0 ? c.a0 : c.a1, lineMates = byLine.get(c.o + c.pos);
+    const throughOpen = sgn < 0 ? c.openBefore : c.openAfter;
+    for (let t = from + sgn * 0.06; Math.abs(t - from) < 1.6; t += sgn / 16) {
+      const gap = Math.abs(t - from);
+      const mate = lineMates.find(q => q !== c && q.a0 - 0.01 <= t && t <= q.a1 + 0.01);
+      if (mate) return mate.jog ? null : { dir: mate.dir, kind: "inner", gap, mate };
+      const P = c.o === "h" ? exactFloor(t, c.pos - 0.06) : exactFloor(c.pos - 0.06, t);
+      const Q = c.o === "h" ? exactFloor(t, c.pos + 0.06) : exactFloor(c.pos + 0.06, t);
+      if (P !== Q) return { dir: P ? 1 : -1, kind: "outer", gap }; // an outer wall continues the line on the rock side
+      if (!P) return null;            // solid rock: the wall turns away
+      if (!throughOpen && gap > 0.3) return null; // open floor at a T, not a doorway
+    }
+    return null;
+  };
+  const neighbourDir = (c, sgn) => { const n = neighbour(c, sgn); return n ? n.dir : null; };
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    for (const c of chains) {
+      if (c.jog) continue;
+      const nS = neighbour(c, -1), nE = neighbour(c, 1), ns = nS ? nS.dir : null, ne = nE ? nE.dir : null;
+      let want = c.dir;
+      if (ns !== null && ne !== null) {
+        if (ns === ne) want = ns;
+        // disagreement: the two sides of a doorway must line up; the other
+        // end turns its corner instead
+        else if (c.openBefore !== c.openAfter) want = c.openBefore ? ns : ne;
+      }
+      else if (ns !== null || ne !== null) { const n = ns !== null ? ns : ne; if (c.dir === 0 || n !== 0) want = n; }
+      if (want !== c.dir) { c.dir = want; changed = true; }
+    }
+    if (!changed) break;
+  }
+  // Halves of one wall split by a doorway that still disagree (each is held by
+  // an outer wall on opposite sides): both take the longer half's side.
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    for (const c of chains) {
+      if (c.jog) continue;
+      for (const sgn of [-1, 1]) {
+        const n = neighbour(c, sgn);
+        if (!n || n.kind !== "inner" || n.dir === c.dir) continue;
+        const longer = (n.mate.a1 - n.mate.a0) > (c.a1 - c.a0) ? n.mate : c, shorter = longer === c ? n.mate : c;
+        if (shorter.dir !== longer.dir) { shorter.dir = longer.dir; changed = true; }
+      }
+    }
+    if (!changed) break;
+  }
+  // An end that runs straight into an outer wall on the other side of the
+  // line turns the corner: it runs on half a wall further to overlap it.
+  for (const c of chains) {
+    if (c.jog) continue;
+    for (const sgn of [-1, 1]) {
+      const n = neighbour(c, sgn);
+      if (n && n.kind === "outer" && n.gap < 0.2 && n.dir !== c.dir) c[sgn < 0 ? "turnStart" : "turnEnd"] = true;
+    }
+  }
+
+  for (const c of chains) {
+    const { o, pos, dir, jog, s0, last, sp0, spN, openBefore, openAfter } = c;
+    let { a0, a1 } = c;
         // A chain that stops part-way along a square (against a curved or cut
         // wall) carries on until that wall has pulled the wall's own thickness
         // away from the line, where the outer wall takes over flush.
@@ -2024,16 +2099,12 @@ function renderMap(canvas, map, st, S) {
           return (P(halfSq * 0.98) || Q(halfSq * 0.98)) && !(P(0.04) && Q(0.04));
         };
         const step = 1 / 48;
-        // (also at whole-square ends, where a curve touches a straight wall over
-        // exactly one square; doorway openings keep their ends)
         if (!openBefore && (sp0[0] > 0 || dir !== 0)) { let t = a0; while (t > a0 - 1 && reach(t - step / 2)) t -= step; a0 = t; }
         if (!openAfter && !jog && (spN[1] < 1 || dir !== 0)) { let t = a1; while (t < a1 + 1 && reach(t + step / 2)) t += step; a1 = t; }
-        chains.push({ o, pos, off: pos + dir * halfSq, a0, a1, jog,
-          // whole-square ends that aren't doorways may meet another inner wall
-          startAt: sp0[0] === 0 && !openBefore ? s0 : null, endAt: spN[1] === 1 && !openAfter && !jog ? last + 1 : null });
-        for (let e = s0; e <= last; e++) chainDir.set(o + pos + "," + e, dir);
-      }
-    }
+    Object.assign(c, { off: pos + dir * halfSq, a0, a1,
+      // whole-square ends that aren't doorways may meet another inner wall
+      startAt: sp0[0] === 0 && !openBefore ? s0 : null, endAt: spN[1] === 1 && !openAfter && !jog ? last + 1 : null });
+    for (let e = s0; e <= last; e++) chainDir.set(o + pos + "," + e, dir);
   }
   // Where a wall ends against another inner wall (a T or a corner), stop it at
   // that wall's far face, whichever side of the grid line each one sits on,
@@ -2043,12 +2114,16 @@ function renderMap(canvas, map, st, S) {
   for (const c of chains) {
     let a0 = c.a0, a1 = c.a1;
     const bs = c.startAt !== null ? meets(c, c.startAt) : null, be = c.endAt !== null ? meets(c, c.endAt) : null;
-    a0 = bs ? bs.off - halfSq : a0 - halfSq;
-    a1 = be ? be.off + halfSq : a1 + halfSq;
+    // at a doorway opening a wall stops at the opening's edge, or at the far
+    // face of a wall crossing there; it never runs on into the opening
+    const os = c.openBefore && c.sp0[0] === 0 ? meets(c, c.s0) : null, oe = c.openAfter && c.spN[1] === 1 ? meets(c, c.last + 1) : null;
+    a0 = bs ? bs.off - halfSq : c.openBefore ? (os ? Math.min(a0, os.off - halfSq) : a0) : a0 - halfSq - (c.turnStart ? halfSq : 0);
+    a1 = be ? be.off + halfSq : c.openAfter ? (oe ? Math.max(a1, oe.off + halfSq) : a1) : a1 + halfSq + (c.turnEnd ? halfSq : 0);
     const run = c.o === "h" ? [a0, c.off, a1, c.off, 1] : [c.off, a0, c.off, a1, 1];
-    if (c.jog) run.push("jog");
+    if (c.jog || c.turnStart || c.turnEnd) run.push("jog");
     runs.push(run);
   }
+  map._halfSq = halfSq; map._exactFloor = exactFloor; map._chains = chains;
   const dirOf = (o, pos, i) => {
     const k = o + pos + "," + i;
     if (chainDir.has(k)) return chainDir.get(k);
