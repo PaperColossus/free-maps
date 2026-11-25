@@ -2110,6 +2110,34 @@ function renderMap(canvas, map, st, S) {
     }
     if (!changed) break;
   }
+  // A wall split by open doorways is still one straight wall: all its pieces
+  // share one side of the line. If its two far ends meet outer walls on
+  // opposite sides, it lines up with one and turns a corner into the other
+  // (at a square corner where there is one, since that reads as a corner).
+  {
+    const seen = new Set();
+    for (const c0 of chains) {
+      if (seen.has(c0) || c0.jog) continue;
+      // walk back to the first piece of the group, then collect it forwards
+      let first = c0;
+      for (let g = 0; g < 50 && first.openBefore; g++) { const n = neighbour(first, -1); if (!n || n.kind !== "inner" || n.mate.jog) break; first = n.mate; }
+      const group = [first];
+      for (let cur = first, g = 0; g < 50 && cur.openAfter; g++) { const n = neighbour(cur, 1); if (!n || n.kind !== "inner" || n.mate.jog || group.includes(n.mate)) break; group.push(n.mate); cur = n.mate; }
+      group.forEach(g => seen.add(g));
+      if (group.length < 2 || group.some(g => g.sliver)) continue;
+      const last = group[group.length - 1];
+      const fS = neighbour(first, -1), fE = neighbour(last, 1);
+      const ds = fS ? fS.dir : null, de = fE ? fE.dir : null;
+      let want;
+      if (ds !== null && de !== null && ds !== de) {
+        const cs = fS.kind === "outer" && squareCorner(first, -1), ce = fE.kind === "outer" && squareCorner(last, 1);
+        if (cs && !ce) want = de; else if (ce && !cs) want = ds;
+        else want = (first.a1 - first.a0) >= (last.a1 - last.a0) ? ds : de;
+        if (want === 0) want = ds || de;
+      } else want = ds !== null ? ds : de !== null ? de : group.reduce((a, g) => (g.a1 - g.a0) > (a.a1 - a.a0) ? g : a).dir;
+      group.forEach(g => { g.dir = want; });
+    }
+  }
   // An end that runs straight into an outer wall on the other side of the
   // line turns the corner: it runs on half a wall further to overlap it.
   for (const c of chains) {
