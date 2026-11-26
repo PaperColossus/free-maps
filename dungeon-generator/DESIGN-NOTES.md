@@ -61,4 +61,6 @@ Built:
 
 - **Rivers (Winter Tombs' barriers):** a meandering band of water across the whole map, through rooms, halls and rock (a hatched channel), flowing off both edges. Crossings go only where they join parts the river has cut off, so the river works as a barrier: a bridge in built rooms and halls, a ford of stepping stones in caves and tunnels. Every dry part of every room must stay reachable or the river is tried elsewhere (up to 14 times, so "Always" occasionally gives none). In symmetric maps the meander and its crossings are mirrored. Doors that would open straight into the water are removed, and room numbers and furnishings keep to dry floor.
 
-Planned: elevation (daises, ledges, short stairs between areas).
+- **Elevation within a level:** raised daises against a doorless, nicheless wall of built rooms (one or two squares deep, half the wall wide, with step lines along the front), or filling the curved end of an apse; ledges across larger caves (a firm line with tick marks on the low side and a flight of carved steps through it); and short flights of steps partway along straight halls, with an arrow pointing down. None change where you can walk. They stay clear of stairs, furnishings, water and room numbers, and are mirrored in symmetric maps. The Elevation setting (None, Some, Lots) defaults to Some.
+
+Not built: passages that run over or under each other (needs layout support for crossing halls that don't connect), and a side-view inset.

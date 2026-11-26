@@ -187,6 +187,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
           <option value="3">Three</option>
         </select>
       </div>
+      <div class="row"><label for="elevation">Elevation</label>
+        <select id="elevation">
+          <option value="none">None</option>
+          <option value="some" selected>Some</option>
+          <option value="lots">Lots</option>
+        </select>
+      </div>
       <div class="row"><label for="river">River</label>
         <select id="river">
           <option value="none" selected>None</option>
@@ -1638,8 +1645,140 @@ function generate(o) {
   map.features = furnish(map, o.seed);
   map.lakes = addLakes(map, o.seed, o.water);
   if (SYM !== "none") mirrorDecor(map, AX - ox);
+  addElevation(map, o, SYM !== "none" ? AX - ox : null);
   map.title = dungeonName(o.seed);
   return map;
+}
+
+/* Elevation within a level (Dyson Logos's ledges, daises and stairs
+   inside a level): raised daises against a doorless wall (or filling the
+   curved end of an apse), ledges across caves with carved steps through
+   them, and short flights of steps partway along straight halls. None of
+   them change where you can walk, so connectivity is untouched.
+   Features: { type: "dais", pts, front: [[x0,y0,x1,y1]...] },
+   { type: "ledge", pts, low: +1|-1, gap: [t0, t1] },
+   { type: "steps", x, y, d }. x, y is an anchor for overlap checks. */
+function addElevation(map, o, axC) {
+  const level = o.elevation || "none";
+  if (level === "none") return;
+  const rng = RNG(o.seed + "|elevation");
+  const lots = level === "lots";
+  const { W, H, cells, rooms } = map;
+  const at = (x, y) => x < 0 || y < 0 || x >= W || y >= H ? 0 : cells[y * W + x];
+  const doorEdges = new Set(map.doors.map(d => d.o + d.x + "," + d.y));
+  const nicheCells = new Set((map.niches || []).map(n => n.x + "," + n.y));
+  const feats = map.features;
+  const busy = (x, y, rad) => // anything already there?
+    feats.some(f => (f.type === "stairs" ? Math.hypot(f.x + 0.5 - x, f.y + 0.5 - y) : Math.hypot(f.x - x, f.y - y)) < rad + (f.type === "pool" ? f.r : f.type === "stairs" ? 0.75 : 0.35))
+    || (map.lakes || []).some(l => l.blobs.some(b => inPoly(b, x, y))) || (map.wetAt && map.wetAt(x, y));
+  const mirrorPts = pts => pts.map(([x, y]) => [2 * axC + 1 - x, y]);
+  const twinOfRoom = r => r.twin ? rooms.find(q => q.id === r.twin) : null;
+  const add = (f, room) => {
+    feats.push(f);
+    if (axC === null || !room || !room.primary) return;
+    const t = twinOfRoom(room); if (!t) return;
+    const m = { ...f, x: 2 * axC + 1 - f.x, pts: f.pts && mirrorPts(f.pts).reverse() };
+    if (f.front) m.front = f.front.map(([x0, y0, x1, y1]) => [2 * axC + 1 - x0, y0, 2 * axC + 1 - x1, y1]);
+    if (f.d !== undefined) m.d = f.d === 0 ? 2 : f.d === 2 ? 0 : f.d;
+    feats.push(m);
+  };
+  for (const r of rooms) {
+    if (axC !== null && r.mirror && r.twin) continue; // gets its twin's
+    const t = r.shape.type;
+    // ---- daises ----
+    if ((t === "rect" || t === "roundrect" || (t === "chamfer" && r.shape.c === 1) || t === "apse") && !r.shape.hole && Math.min(r.w, r.h) >= 5
+      && rng.chance(lots ? 0.45 : 0.22)) {
+      if (t === "apse") { // the curved end becomes a raised half-round
+        const sd = r.shape.side, [nx, ny] = DIRS[sd], span = nx ? r.h : r.w, R = span / 2, along = nx ? r.w : r.h;
+        if (axC !== null && r.axis && nx !== 0) continue;
+        const cx = r.x + r.w / 2 + nx * (along / 2 - R), cy = r.y + r.h / 2 + ny * (along / 2 - R), rd = R - 0.9;
+        if (rd < 1.2) continue;
+        const a0 = Math.atan2(ny, nx), pts = [];
+        for (let k = 0; k <= 16; k++) { const a = a0 - Math.PI / 2 + Math.PI * k / 16; pts.push([cx + Math.cos(a) * rd, cy + Math.sin(a) * rd]); }
+        const tx = -ny, ty = nx, front = [];
+        for (const off of [0.18, 0.36]) front.push([cx - tx * rd - nx * off, cy - ty * rd - ny * off, cx + tx * rd - nx * off, cy + ty * rd - ny * off]);
+        if (pts.some(([x, y]) => busy(x, y, 0.2)) || busy(cx, cy, 0.6) || Math.hypot(r.lx - cx, r.ly - cy) < rd + 0.4) continue;
+        add({ type: "dais", x: cx, y: cy, pts, front }, r);
+        continue;
+      }
+      // against a doorless, nicheless wall, centred, a square or two deep
+      const sides = rng.shuffle([0, 1, 2, 3]).filter(d => {
+        if (axC !== null && r.axis && d % 2 === 0) return false; // axis rooms: only daises that are symmetric
+        const [nx, ny] = DIRS[d];
+        for (let k = 0; k < (nx ? r.h : r.w); k++) {
+          const x = nx > 0 ? r.x + r.w - 1 : nx < 0 ? r.x : r.x + k, y = ny > 0 ? r.y + r.h - 1 : ny < 0 ? r.y : r.y + k;
+          const key = nx ? "v" + (nx > 0 ? x + 1 : x) + "," + y : "h" + x + "," + (ny > 0 ? y + 1 : y);
+          if (doorEdges.has(key) || nicheCells.has((x + nx) + "," + (y + ny))) return false;
+        }
+        return true;
+      });
+      for (const d of sides) {
+        const [nx, ny] = DIRS[d], len = nx ? r.h : r.w, deep = nx ? r.w : r.h;
+        let wd = Math.max(3, Math.round(len * 0.5)); if ((len - wd) % 2) wd--; if (wd < 2 || len - wd < 2) continue;
+        const dp = deep >= 8 ? 2 : 1;
+        const s0 = (len - wd) / 2;
+        const wallU = nx > 0 ? r.x + r.w : nx < 0 ? r.x : ny > 0 ? r.y + r.h : r.y;
+        const frontU = wallU - (nx || ny) * dp;
+        const pts = nx ? [[wallU, r.y + s0], [frontU, r.y + s0], [frontU, r.y + s0 + wd], [wallU, r.y + s0 + wd]]
+                       : [[r.x + s0, wallU], [r.x + s0, frontU], [r.x + s0 + wd, frontU], [r.x + s0 + wd, wallU]];
+        const inward = -(nx || ny), front = [];
+        for (const off of [0.18, 0.36]) front.push(nx ? [frontU + inward * off, r.y + s0 + 0.3, frontU + inward * off, r.y + s0 + wd - 0.3]
+                                                     : [r.x + s0 + 0.3, frontU + inward * off, r.x + s0 + wd - 0.3, frontU + inward * off]);
+        const cx = (pts[0][0] + pts[2][0]) / 2, cy = (pts[0][1] + pts[2][1]) / 2;
+        let clash = false;
+        for (let u = 0.25; u < wd && !clash; u += 0.5) for (let v = 0.25; v < dp + 0.5 && !clash; v += 0.5) {
+          const px = nx ? wallU - (nx * v) : r.x + s0 + u, py = nx ? r.y + s0 + u : wallU - (ny * v);
+          if (busy(px, py, 0.15)) clash = true;
+        }
+        if (clash || Math.hypot(r.lx - cx, r.ly - cy) < Math.max(wd, dp) / 2 + 0.7) continue;
+        add({ type: "dais", x: cx, y: cy, pts: orient(pts), front }, r);
+        break;
+      }
+    }
+    // ---- cave ledges ----
+    if (t === "cave" && r.w * r.h >= 30 && rng.chance(lots ? 0.7 : 0.4)) {
+      for (let tries = 0; tries < 12; tries++) {
+        const ang = rng.range(0, Math.PI), ux = Math.cos(ang), uy = Math.sin(ang), nx = -uy, ny = ux;
+        const off = rng.range(-Math.min(r.w, r.h) * 0.22, Math.min(r.w, r.h) * 0.22);
+        const cx = r.x + r.w / 2 + nx * off, cy = r.y + r.h / 2 + ny * off;
+        if (Math.abs((r.lx - cx) * nx + (r.ly - cy) * ny) < 1.1) continue; // keep the number off the ledge
+        const pts = []; let v = 0;
+        for (let tt = -Math.max(r.w, r.h); tt <= Math.max(r.w, r.h); tt += 0.25) {
+          v = v * 0.8 + rng.range(-0.06, 0.06);
+          const px = cx + ux * tt + nx * v, py = cy + uy * tt + ny * v;
+          if (inRoom(r, px, py) && map.floorAt(px, py)) pts.push([px, py]);
+          else if (pts.length) break;
+        }
+        if (pts.length < 12 || pts.some(([x, y]) => busy(x, y, 0.25))) continue;
+        const g0 = Math.floor(pts.length * rng.range(0.3, 0.6)), g1 = Math.min(pts.length - 1, g0 + 4); // a square-wide flight of steps
+        add({ type: "ledge", x: cx, y: cy, pts, low: rng.chance(0.5) ? 1 : -1, gap: [g0, g1] }, r);
+        break;
+      }
+    }
+  }
+  // ---- steps in halls ----
+  const straight = [];
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x;
+    if (cells[i] !== -1 || (map.tunnels && map.tunnels[i]) || (map.wet && map.wet[i])) continue;
+    const e = at(x + 1, y) !== 0 && at(x - 1, y) !== 0 && at(x, y - 1) === 0 && at(x, y + 1) === 0;
+    const n = at(x, y + 1) !== 0 && at(x, y - 1) !== 0 && at(x - 1, y) === 0 && at(x + 1, y) === 0;
+    if (!e && !n) continue;
+    // the hall must go on a square either way (not a room or door right there)
+    if (e && (at(x + 1, y) !== -1 || at(x - 1, y) !== -1)) continue;
+    if (n && (at(x, y + 1) !== -1 || at(x, y - 1) !== -1)) continue;
+    if (axC !== null && x < axC) continue; // symmetric maps: placed on the right, mirrored
+    straight.push([x, y, e ? (rng.chance(0.5) ? 0 : 2) : (rng.chance(0.5) ? 1 : 3)]);
+  }
+  rng.shuffle(straight);
+  const want = Math.max(1, Math.round(rooms.length / (lots ? 4 : 8)));
+  const placed = [];
+  for (const [x, y, d] of straight) {
+    if (placed.length >= want) break;
+    if (placed.some(([px, py]) => Math.hypot(px - x, py - y) < 5) || busy(x + 0.5, y + 0.5, 0.4)) continue;
+    placed.push([x, y]); feats.push({ type: "steps", x, y, d });
+    if (axC !== null) { const mx2 = 2 * axC - x; if (mx2 !== x && at(mx2, y) === -1) feats.push({ type: "steps", x: mx2, y, d: d === 0 ? 2 : d === 2 ? 0 : d }); }
+  }
 }
 
 /* Rivers: a meandering band of water across the whole map, cutting
@@ -2953,11 +3092,56 @@ function renderMap(canvas, map, st, S) {
       ctx.clip(keep, "evenodd");
     }
     for (const f of map.features) {
-      if (!st.decor && f.type !== "key") continue;
+      if (!st.decor && !["key", "dais", "ledge", "steps"].includes(f.type)) continue; // elevation is part of the layout
       if (f.type === "column") {
         ctx.beginPath(); ctx.arc(f.x * S, f.y * S, S * 0.2, 0, Math.PI * 2);
         ctx.fillStyle = st.walls === "stone" ? pal.wallFill : pal.ink; ctx.fill();
         ctx.lineWidth = Math.max(1, S * 0.04); ctx.strokeStyle = pal.ink; ctx.stroke();
+      } else if (f.type === "dais") {
+        const pp = new Path2D(); tracePoly(pp, f.pts, S);
+        ctx.fillStyle = pal.floorAlt; ctx.fill(pp);
+        ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1.2, S * 0.05); ctx.lineJoin = "miter"; ctx.stroke(pp);
+        ctx.lineWidth = Math.max(1, S * 0.025); ctx.beginPath();
+        for (const [x0, y0, x1, y1] of f.front) { ctx.moveTo(x0 * S, y0 * S); ctx.lineTo(x1 * S, y1 * S); }
+        ctx.stroke();
+      } else if (f.type === "ledge") {
+        // the rise: a firm line, ticks on the low side, carved steps through the gap
+        const pts = f.pts, [g0, g1] = f.gap;
+        ctx.strokeStyle = pal.ink; ctx.lineCap = "round"; ctx.lineJoin = "round";
+        ctx.lineWidth = Math.max(1.2, S * 0.045); ctx.beginPath();
+        for (const [a, b] of [[0, g0], [g1, pts.length - 1]]) { ctx.moveTo(pts[a][0] * S, pts[a][1] * S); for (let k = a + 1; k <= b; k++) ctx.lineTo(pts[k][0] * S, pts[k][1] * S); }
+        ctx.stroke();
+        ctx.lineWidth = Math.max(1, S * 0.022); ctx.beginPath();
+        for (let k = 1; k < pts.length - 1; k++) {
+          const [x0, y0] = pts[k - 1], [x1, y1] = pts[k + 1], l = Math.hypot(x1 - x0, y1 - y0) || 1, nx = -(y1 - y0) / l * f.low, ny = (x1 - x0) / l * f.low;
+          if (k > g0 && k < g1) continue; // no ticks where the steps are
+          if (k % 2) continue;
+          const [px, py] = pts[k], len = k % 4 === 0 ? 0.22 : 0.14;
+          ctx.moveTo(px * S, py * S); ctx.lineTo((px + nx * len) * S, (py + ny * len) * S);
+        }
+        ctx.stroke();
+        { // the flight of steps in the gap
+          const [ax, ay] = pts[g0], [bx, by] = pts[g1], l = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / l, uy = (by - ay) / l, nx = -uy * f.low, ny = ux * f.low;
+          ctx.lineWidth = Math.max(1, S * 0.03); ctx.beginPath();
+          for (let k = 0; k <= 3; k++) { const o2 = -0.15 + k * 0.15; ctx.moveTo((ax + nx * o2) * S, (ay + ny * o2) * S); ctx.lineTo((bx + nx * o2) * S, (by + ny * o2) * S); }
+          ctx.stroke();
+        }
+      } else if (f.type === "steps") {
+        const x = f.x * S, y = f.y * S, [dx, dy] = DIRS[f.d];
+        ctx.fillStyle = pal.floor; ctx.fillRect(x + S * 0.12, y + S * 0.12, S * 0.76, S * 0.76);
+        ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.03); ctx.lineCap = "butt"; ctx.beginPath();
+        for (let k = 0; k < 5; k++) { // treads across the hall
+          const t = 0.18 + k * 0.16;
+          if (dx) { ctx.moveTo(x + S * t, y + S * 0.14); ctx.lineTo(x + S * t, y + S * 0.86); } else { ctx.moveTo(x + S * 0.14, y + S * t); ctx.lineTo(x + S * 0.86, y + S * t); }
+        }
+        ctx.stroke();
+        // arrow pointing down the flight
+        const cx = x + S * 0.5, cy = y + S * 0.5, a = S * 0.18;
+        ctx.lineWidth = Math.max(1, S * 0.035); ctx.lineCap = "round"; ctx.beginPath();
+        ctx.moveTo(cx - dx * a * 1.4, cy - dy * a * 1.4); ctx.lineTo(cx + dx * a * 1.4, cy + dy * a * 1.4);
+        ctx.moveTo(cx + dx * a * 1.4 - (dx * a + dy * a), cy + dy * a * 1.4 - (dy * a - dx * a)); ctx.lineTo(cx + dx * a * 1.4, cy + dy * a * 1.4);
+        ctx.lineTo(cx + dx * a * 1.4 - (dx * a - dy * a), cy + dy * a * 1.4 - (dy * a + dx * a));
+        ctx.fillStyle = pal.floor; ctx.stroke();
       } else if (f.type === "stairs") {
         const x = f.x * S, y = f.y * S;
         ctx.fillStyle = pal.floor; ctx.fillRect(x + S * 0.04, y + S * 0.04, S * 0.92, S * 0.92);
@@ -3058,7 +3242,7 @@ function renderMap(canvas, map, st, S) {
    UI wiring
    ================================================================ */
 const $ = id => document.getElementById(id);
-const layoutIds = ["seed", "rooms", "layout", "symmetry", "paths", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "shapes", "niches", "water", "river", "entrances", "loops", "doors"];
+const layoutIds = ["seed", "rooms", "layout", "symmetry", "paths", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "shapes", "niches", "water", "river", "elevation", "entrances", "loops", "doors"];
 const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "cluster", "strokeGap", "palette", "shadow", "light", "numbers", "decor", "showTitle", "grit"];
 const SEED_WORDS = ["moss", "ember", "salt", "rook", "veil", "brass", "cinder", "hollow", "lark", "ossuary", "marrow", "tallow", "wick", "flint", "gloam", "barrow", "quill", "rust"];
 let map = null;
@@ -3078,7 +3262,7 @@ function layoutOpts() {
     hallMin, hallMax, hallShape: $("hallShape").value, minSize, maxSize,
     loops: +$("loops").value / 100, doors: $("doors").value,
     symmetry: $("symmetry").value, paths: $("paths").value,
-    entrances: +$("entrances").value, river: $("river").value,
+    entrances: +$("entrances").value, river: $("river").value, elevation: $("elevation").value,
     shapes: $("shapes").value, niches: +$("niches").value / 100, water: +$("water").value / 100
   };
 }
