@@ -59,4 +59,6 @@ Built:
 - **Ink & graph preset:** heavy ink walls (his second, thickening pass), pen hatching (short groups of strokes, each slightly shortened and off-angle, neighbours at contrasting angles), blue graph-paper grid, bare white paper beyond the hatching, no shadows, and grit (dots and small stones) on cave floors.
 - **Entrances:** one to three ("a good dungeon has at LEAST two entrances"). Extra entrances are a passage from an outer room straight off the map edge (a cave mouth for caves), kept apart and on different sides, or else a stair up in a room far from the first entrance.
 
-Planned: rivers that split the level, crossed by bridges and fords only where needed to keep every room reachable; elevation (daises, ledges, short stairs between areas).
+- **Rivers (Winter Tombs' barriers):** a meandering band of water across the whole map, through rooms, halls and rock (a hatched channel), flowing off both edges. Crossings go only where they join parts the river has cut off, so the river works as a barrier: a bridge in built rooms and halls, a ford of stepping stones in caves and tunnels. Every dry part of every room must stay reachable or the river is tried elsewhere (up to 14 times, so "Always" occasionally gives none). In symmetric maps the meander and its crossings are mirrored. Doors that would open straight into the water are removed, and room numbers and furnishings keep to dry floor.
+
+Planned: elevation (daises, ledges, short stairs between areas).

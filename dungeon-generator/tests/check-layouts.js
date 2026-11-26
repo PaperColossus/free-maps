@@ -12,7 +12,7 @@ const { chromium } = require('playwright');
       const start = m.rooms.find(r => r.num === 1); const seen = new Uint8Array(cells.length);
       const st = [Math.floor(start.lx), Math.floor(start.ly)]; const q = [st]; seen[st[1] * W + st[0]] = 1;
       while (q.length) { const [x, y] = q.pop(); const a = cells[y * W + x];
-        for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) { const nx = x + dx, ny = y + dy, bb = cells[ny * W + nx]; if (!bb || seen[ny * W + nx]) continue;
+        for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) { const nx = x + dx, ny = y + dy, bb = cells[ny * W + nx]; if (!bb || bb === -2 || seen[ny * W + nx] || (m.wet && m.wet[ny * W + nx] === 1)) continue;
           const key = dx ? 'v' + Math.max(x, nx) + ',' + y : 'h' + x + ',' + Math.max(y, ny);
           const tunnel = (a === -1 && caves.has(bb) && m.tunnels[y * W + x]) || (bb === -1 && caves.has(a) && m.tunnels[ny * W + nx]);
           if (a !== bb && !doors.has(key) && !(caves.has(a) && caves.has(bb)) && !tunnel) continue; seen[ny * W + nx] = 1; q.push([nx, ny]); } }

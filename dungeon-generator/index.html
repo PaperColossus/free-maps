@@ -187,6 +187,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
           <option value="3">Three</option>
         </select>
       </div>
+      <div class="row"><label for="river">River</label>
+        <select id="river">
+          <option value="none" selected>None</option>
+          <option value="some">Sometimes</option>
+          <option value="always">Always</option>
+        </select>
+      </div>
       <div class="row"><label for="water">Water</label>
         <div class="slide"><input id="water" type="range" min="0" max="100" value="20"><output for="water"></output></div>
       </div>
@@ -674,6 +681,11 @@ function buildGeometry(map) {
     }
   }
   for (const n of niches) polys.push(nichePoly(n));
+  if (map.river) polys.push(map.river.poly);
+  map.wetAt = (x, y) => {
+    if (!map.river || !inPoly(map.river.poly, x, y)) return false;
+    return !(map.crossings || []).some(c => x >= c.x0 && x <= c.x1 && y >= c.y0 && y <= c.y1);
+  };
   for (const e of map.exits || []) { // carry exit passages past the edge so they open off the map
     const [dx, dy] = DIRS[e.d], x0 = e.x + Math.min(0, dx) * 3, y0 = e.y + Math.min(0, dy) * 3;
     polys.push(orient([[x0, y0], [x0 + 1 + Math.abs(dx) * 3, y0], [x0 + 1 + Math.abs(dx) * 3, y0 + 1 + Math.abs(dy) * 3], [x0, y0 + 1 + Math.abs(dy) * 3]]));
@@ -1609,7 +1621,18 @@ function generate(o) {
   for (const gi of tunnelCells) if (!builtCells.has(gi)) { const x = gi % G - ox, y = Math.floor(gi / G) - oy; if (x >= 0 && y >= 0 && x < W && y < H && cells[y * W + x] === -1) tunnels[y * W + x] = 1; }
   const map = { W, H, cells, tunnels, rooms: outRooms, doors: outDoors, niches: outNiches, seed: o.seed };
   addEntrances(map, o, rooms[0] ? rooms[0].id : 1);
+  addRiver(map, o, rooms[0] ? rooms[0].id : 1, SYM !== "none" ? AX - ox : null);
   buildGeometry(map);
+  if (map.river) for (const r of map.rooms) if ([[0, 0], [0, -0.45], [0, 0.45], [-0.45, 0], [0.45, 0]].some(([a, b]) => map.wetAt(r.lx + a, r.ly + b))) { // move a drowned room number to dry floor
+    let best = null;
+    for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) {
+      const px = x + 0.5, py = y + 0.5;
+      if (!inRoom(r, px, py) || map.wetAt(px, py) || map.wetAt(px, py - 0.6) || map.wetAt(px, py + 0.6)) continue;
+      const sc = -Math.hypot(px - r.x - r.w / 2, py - r.y - r.h / 2);
+      if (!best || sc > best[0]) best = [sc, px, py];
+    }
+    if (best) [r.lx, r.ly] = [best[1], best[2]];
+  }
   map.linkKinds = [...linkKind.values()];
   if (cycle && rooms[cycle.goal - 1]) { map.cycle = cycle; map.goal = cycle.goal; map.keyRoom = cycle.keyRoom; }
   map.features = furnish(map, o.seed);
@@ -1617,6 +1640,114 @@ function generate(o) {
   if (SYM !== "none") mirrorDecor(map, AX - ox);
   map.title = dungeonName(o.seed);
   return map;
+}
+
+/* Rivers: a meandering band of water across the whole map, cutting
+   through rooms, halls and rock. Then crossings are added only where they
+   join parts of the dungeon the river has cut off from each other: a bridge
+   where the river crosses a built room or hall, a ford in caves and tunnels.
+   If the river would leave any room unreachable it is tried again elsewhere.
+   Cells: rock the river passes through becomes -2 (a channel); map.wet is
+   1 for water and 2 for a crossing. */
+function addRiver(map, o, firstId, axC) {
+  if (!o.river || o.river === "none") return;
+  const rng = RNG(o.seed + "|river");
+  if (o.river === "some" && !rng.chance(0.5)) return;
+  const { W, H, cells, rooms, doors } = map;
+  const caveIds = new Set(rooms.filter(r => r.shape.type === "cave").map(r => r.id));
+  const doorSet = new Set(doors.map(d => d.o + d.x + "," + d.y));
+  const isFloor = v => v !== 0 && v !== -2;
+  const floorCount = cells.reduce((n, v) => n + (isFloor(v) ? 1 : 0), 0);
+  for (let attempt = 0; attempt < 14; attempt++) {
+    // flow direction: across the longer side, or across the axis in symmetric maps
+    const horiz = axC !== null ? true : W >= H ? rng.chance(0.65) : rng.chance(0.35);
+    const L = horiz ? W : H, M = horiz ? H : W;
+    const base = rng.range(M * 0.3, M * 0.7), A1 = rng.range(1.5, 3.5), A2 = rng.range(0.4, 1.2);
+    const f1 = Math.PI * 2 / rng.range(L * 0.6, L * 1.3), f2 = Math.PI * 2 / rng.range(L * 0.2, L * 0.4), p1 = rng.range(0, 6.3), p2 = rng.range(0, 6.3);
+    const hw0 = rng.range(0.75, 1.15);
+    // symmetric maps: a meander mirrored about the axis
+    const centre = u => axC !== null ? base + A1 * Math.cos((u - axC - 0.5) * f1) + A2 * Math.cos((u - axC - 0.5) * f2)
+      : base + A1 * Math.sin(u * f1 + p1) + A2 * Math.sin(u * f2 + p2);
+    const half = u => hw0 + 0.18 * Math.sin(u * 0.9 + p2);
+    const samples = [];
+    for (let u = -4; u <= L + 4; u += 0.25) samples.push([u, centre(u), half(u)]);
+    const toXY = (u, v) => horiz ? [u, v] : [v, u];
+    // which cells the water covers (cell centre inside the band)
+    const wet = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const [u, v] = horiz ? [x + 0.5, y + 0.5] : [y + 0.5, x + 0.5];
+      const k = Math.max(0, Math.min(samples.length - 1, Math.round((u + 4) / 0.25)));
+      if (Math.abs(v - samples[k][1]) < samples[k][2] + 0.1) wet[y * W + x] = 1;
+    }
+    let wetFloor = 0; for (let i = 0; i < wet.length; i++) if (wet[i] && isFloor(cells[i])) wetFloor++;
+    if (wetFloor < 4 || wetFloor > floorCount * 0.16) continue;
+    // the first entrance's stairs stay dry: room 1 must keep most of its floor
+    const r1 = rooms.find(r => r.id === firstId);
+    let r1wet = 0; for (let y = r1.y; y < r1.y + r1.h; y++) for (let x = r1.x; x < r1.x + r1.w; x++) if (wet[y * W + x]) r1wet++;
+    if (r1wet > r1.w * r1.h * 0.4) continue;
+    // walkable graph without the water
+    const parent = new Int32Array(W * H).map((_, i) => i);
+    const find = i => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+    const unite = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[a] = b; };
+    const walk = i => isFloor(cells[i]) && !wet[i];
+    const passable = (i, j, horizEdge, x, y) => {
+      const a = cells[i], b = cells[j];
+      if (a === b) return true;
+      if (caveIds.has(a) && caveIds.has(b)) return true;
+      if ((a === -1 && caveIds.has(b) && map.tunnels[i]) || (b === -1 && caveIds.has(a) && map.tunnels[j])) return true;
+      return doorSet.has(horizEdge ? "h" + x + "," + y : "v" + x + "," + y);
+    };
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (!walk(i)) continue;
+      if (x + 1 < W && walk(i + 1) && passable(i, i + 1, false, x + 1, y)) unite(i, i + 1);
+      if (y + 1 < H && walk(i + W) && passable(i, i + W, true, x, y + 1)) unite(i, i + W);
+    }
+    // crossing candidates: a straight run of wet floor across the river with dry floor of the same space on both banks
+    const cands = [];
+    for (let u = 0; u < L; u++) {
+      let v = 0;
+      while (v < M) {
+        const idx = (uu, vv) => { const [x, y] = toXY(uu, vv); return y * W + x; };
+        if (!wet[idx(u, v)]) { v++; continue; }
+        const v0 = v; while (v < M && wet[idx(u, v)]) v++;
+        if (v0 === 0 || v >= M) continue;
+        const a = idx(u, v0 - 1), b = idx(u, v), id = cells[a];
+        if (!walk(a) || !walk(b) || cells[b] !== id) continue;
+        let same = true; for (let t = v0; t < v; t++) if (cells[idx(u, t)] !== id) same = false;
+        if (!same) continue;
+        const run = []; for (let t = v0; t < v; t++) run.push(idx(u, t));
+        cands.push({ a, b, run, u, v0, v1: v, kind: caveIds.has(id) || (id === -1 && map.tunnels[a]) ? "ford" : "bridge" });
+      }
+    }
+    rng.shuffle(cands);
+    const chosen = [];
+    const mirrorOf = c => axC === null ? null : cands.find(q => q.u === 2 * axC - c.u && q.v0 === c.v0 && q.v1 === c.v1);
+    for (const c of cands) {
+      if (find(c.a) === find(c.b)) continue;
+      if (chosen.some(q => Math.abs(q.u - c.u) < 3 && find(q.a) === find(c.a))) continue;
+      chosen.push(c); unite(c.a, c.b);
+      const m = mirrorOf(c); if (m && m !== c && !chosen.includes(m)) { chosen.push(m); unite(m.a, m.b); }
+    }
+    // every room must still be reachable from the first entrance
+    let root = -1;
+    for (let i = 0; i < cells.length && root < 0; i++) if (cells[i] === firstId && walk(i)) root = find(i);
+    // (every dry part of every room: a room split by the river needs its own crossing)
+    let ok = root >= 0;
+    for (let i = 0; i < cells.length && ok; i++) if (cells[i] > 0 && walk(i) && find(i) !== root) ok = false;
+    if (!ok) continue;
+    // commit
+    map.wet = wet;
+    for (let i = 0; i < cells.length; i++) if (wet[i] && cells[i] === 0) cells[i] = -2;
+    map.crossings = chosen.map(c => { for (const i of c.run) wet[i] = 2; const [x0, y0] = toXY(c.u, c.v0), [x1, y1] = toXY(c.u + 1, c.v1); return { x0, y0, x1, y1, horiz, kind: c.kind }; });
+    // doors that now open straight into water lead nowhere: remove them
+    map.doors = doors.filter(d => { const [i, j] = d.o === "v" ? [d.y * W + d.x - 1, d.y * W + d.x] : [(d.y - 1) * W + d.x, d.y * W + d.x]; return wet[i] !== 1 && wet[j] !== 1; });
+    // banks: centreline offset each way with a little roughness, run past the map edges
+    const left = [], right = [];
+    for (const [u, v, hw] of samples) { const n1 = rng.range(-0.06, 0.06), n2 = rng.range(-0.06, 0.06); left.push(toXY(u, v - hw - n1)); right.push(toXY(u, v + hw + n2)); }
+    map.river = { horiz, poly: orient(left.concat(right.reverse())), samples: samples.map(([u, v, hw]) => [...toXY(u, v), hw]) };
+    return;
+  }
 }
 
 /* Extra entrances (Dyson Logos: "a good dungeon has at LEAST two entrances").
@@ -1726,6 +1857,7 @@ function furnish(map, seed) {
       const [dx, dy] = DIRS[d];
       for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) {
         if (!inside(r, x + 0.5, y + 0.5, 0.47)) continue; // whole square must be floor
+        if (map.wetAt && [[0.1, 0.1], [0.9, 0.1], [0.1, 0.9], [0.9, 0.9]].some(([a, b]) => map.wetAt(x + a, y + b))) continue;
         const nx = x + dx, ny = y + dy;
         if (map.floorAt(nx + 0.5, ny + 0.5) && map.floorAt(nx + 0.5 - dx * 0.4, ny + 0.5 - dy * 0.4)) continue; // must back onto a wall
         if (at(nx, ny) !== r.id && at(nx, ny) !== 0) continue;
@@ -1800,7 +1932,7 @@ function furnish(map, seed) {
   for (let i = 0; i < cells.length; i++) if (cells[i] === -1 && rng.chance(0.04)) {
     feats.push({ type: "rubble", x: (i % W) + rng.range(0.2, 0.8), y: Math.floor(i / W) + rng.range(0.2, 0.8), s: rng.f() });
   }
-  return feats;
+  return map.wetAt ? feats.filter(f => f.type === "stairs" || !map.wetAt(f.x, f.y)) : feats;
 }
 
 /* Lakes: lumpy blobs of water inside larger rooms and caves, with a
@@ -1813,6 +1945,7 @@ function addLakes(map, seed, amount) {
   const rng = RNG(seed + "|lakes");
   for (const r of map.rooms) {
     if (r.shape.pool || r.shape.hole || Math.min(r.w, r.h) < 5) continue;
+    if (map.wet) { let w2 = false; for (let y = r.y; y < r.y + r.h && !w2; y++) for (let x = r.x; x < r.x + r.w; x++) if (map.wet[y * map.W + x]) { w2 = true; break; } if (w2) continue; }
     const cave = r.shape.type === "cave";
     if (!rng.chance(Math.min(1, amount * (cave ? 1.8 : 1.1)))) continue;
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -2233,6 +2366,46 @@ function renderMap(canvas, map, st, S) {
       }
     }
   }
+  // river: water, ink banks, a few flow marks, then bridges and fords
+  if (map.river) {
+    const rp = new Path2D(); tracePoly(rp, map.river.poly, S);
+    ctx.save(); ctx.clip(floorPath);
+    ctx.fillStyle = pal.water; ctx.fill(rp);
+    ctx.save(); ctx.clip(rp);
+    ctx.strokeStyle = pal.detail; ctx.lineWidth = Math.max(1, S * 0.025); ctx.lineCap = "round"; ctx.beginPath();
+    const sm = map.river.samples, fr = RNG(map.seed + "|flow");
+    for (let k = 4; k < sm.length - 6; k += 3) {
+      const [x, y, hw] = sm[k], [x2, y2] = sm[k + 3], off = fr.range(-hw * 0.6, hw * 0.6);
+      const tx = x2 - x, ty = y2 - y, l = Math.hypot(tx, ty) || 1, nx = -ty / l, ny = tx / l;
+      if (fr.chance(0.55)) { ctx.moveTo((x + nx * off) * S, (y + ny * off) * S); ctx.quadraticCurveTo(((x + x2) / 2 + nx * (off + 0.08)) * S, ((y + y2) / 2 + ny * (off + 0.08)) * S, (x2 + nx * off) * S, (y2 + ny * off) * S); }
+    }
+    ctx.stroke(); ctx.restore();
+    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.035); ctx.lineJoin = "round"; ctx.stroke(rp);
+    ctx.restore();
+    for (const c of map.crossings || []) {
+      const along = c.horiz; // travel runs across the river
+      const x0 = c.x0 * S, y0 = c.y0 * S, x1 = c.x1 * S, y1 = c.y1 * S;
+      if (c.kind === "bridge") {
+        const ins = S * 0.12, bx0 = along ? x0 + ins : x0, bx1 = along ? x1 - ins : x1, by0 = along ? y0 : y0 + ins, by1 = along ? y1 : y1 - ins;
+        ctx.fillStyle = pal.floor; ctx.fillRect(bx0, by0, bx1 - bx0, by1 - by0);
+        ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.02); ctx.beginPath();
+        if (along) for (let yy = by0 + S * 0.2; yy < by1; yy += S * 0.2) { ctx.moveTo(bx0, yy); ctx.lineTo(bx1, yy); }
+        else for (let xx = bx0 + S * 0.2; xx < bx1; xx += S * 0.2) { ctx.moveTo(xx, by0); ctx.lineTo(xx, by1); }
+        ctx.stroke();
+        ctx.lineWidth = Math.max(1.2, S * 0.06); ctx.beginPath();
+        if (along) { ctx.moveTo(bx0, by0); ctx.lineTo(bx0, by1); ctx.moveTo(bx1, by0); ctx.lineTo(bx1, by1); }
+        else { ctx.moveTo(bx0, by0); ctx.lineTo(bx1, by0); ctx.moveTo(bx0, by1); ctx.lineTo(bx1, by1); }
+        ctx.stroke();
+      } else { // ford: stepping stones
+        const n = Math.max(3, Math.round((along ? (y1 - y0) : (x1 - x0)) / S * 2));
+        ctx.fillStyle = pal.floorAlt; ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.03);
+        for (let k = 0; k < n; k++) {
+          const t = (k + 0.5) / n, sx = along ? (x0 + x1) / 2 + (k % 2 ? 1 : -1) * S * 0.12 : x0 + (x1 - x0) * t, sy = along ? y0 + (y1 - y0) * t : (y0 + y1) / 2 + (k % 2 ? 1 : -1) * S * 0.12;
+          ctx.beginPath(); ctx.ellipse(sx, sy, S * 0.17, S * 0.13, k, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        }
+      }
+    }
+  }
   // lakes: shallow rim, deep water, ink shoreline, a few ripples
   if (map.lakes && map.lakes.length) {
     for (const lake of map.lakes) {
@@ -2288,6 +2461,7 @@ function renderMap(canvas, map, st, S) {
   const floorBoth = (o, pos, i) => o === "h" ? T3.every(t => fl(i + t, pos - 0.15) && fl(i + t, pos + 0.15)) : T3.every(t => fl(pos - 0.15, i + t) && fl(pos + 0.15, i + t));
   const wallEdge = (o, pos, i) => {
     const [a, b] = side(o, pos, i);
+    if (map.wet) { const [ia, ib] = o === "h" ? [(pos - 1) * W + i, pos * W + i] : [i * W + pos - 1, i * W + pos]; if (map.wet[ia] && map.wet[ib]) return false; }
     if (caveId.has(a) && caveId.has(b)) return false; // neighbouring caves simply open into each other
     if (map.tunnels && ((a === -1 && caveId.has(b)) || (b === -1 && caveId.has(a)))) {
       const ti = o === "h" ? (a === -1 ? (pos - 1) * W + i : pos * W + i) : (a === -1 ? i * W + pos - 1 : i * W + pos);
@@ -2884,7 +3058,7 @@ function renderMap(canvas, map, st, S) {
    UI wiring
    ================================================================ */
 const $ = id => document.getElementById(id);
-const layoutIds = ["seed", "rooms", "layout", "symmetry", "paths", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "shapes", "niches", "water", "entrances", "loops", "doors"];
+const layoutIds = ["seed", "rooms", "layout", "symmetry", "paths", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "shapes", "niches", "water", "river", "entrances", "loops", "doors"];
 const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "cluster", "strokeGap", "palette", "shadow", "light", "numbers", "decor", "showTitle", "grit"];
 const SEED_WORDS = ["moss", "ember", "salt", "rook", "veil", "brass", "cinder", "hollow", "lark", "ossuary", "marrow", "tallow", "wick", "flint", "gloam", "barrow", "quill", "rust"];
 let map = null;
@@ -2904,7 +3078,7 @@ function layoutOpts() {
     hallMin, hallMax, hallShape: $("hallShape").value, minSize, maxSize,
     loops: +$("loops").value / 100, doors: $("doors").value,
     symmetry: $("symmetry").value, paths: $("paths").value,
-    entrances: +$("entrances").value,
+    entrances: +$("entrances").value, river: $("river").value,
     shapes: $("shapes").value, niches: +$("niches").value / 100, water: +$("water").value / 100
   };
 }
