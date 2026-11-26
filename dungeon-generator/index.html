@@ -180,6 +180,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
       <div class="row"><label for="niches">Niches</label>
         <div class="slide"><input id="niches" type="range" min="0" max="100" value="30"><output for="niches"></output></div>
       </div>
+      <div class="row"><label for="entrances">Entrances</label>
+        <select id="entrances">
+          <option value="1">One</option>
+          <option value="2" selected>Two</option>
+          <option value="3">Three</option>
+        </select>
+      </div>
       <div class="row"><label for="water">Water</label>
         <div class="slide"><input id="water" type="range" min="0" max="100" value="20"><output for="water"></output></div>
       </div>
@@ -205,6 +212,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
           <option value="classic">Old-school blue</option>
           <option value="blueprint">Blueprint</option>
           <option value="lantern">Lantern light</option>
+          <option value="graph">Ink &amp; graph</option>
           <option value="custom">Custom</option>
         </select>
       </div>
@@ -239,6 +247,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
       <div class="row"><label for="outside">Surroundings</label>
         <select id="outside">
           <option value="hatch">Hatching</option>
+          <option value="pen">Pen hatching</option>
           <option value="cross">Cross-hatch</option>
           <option value="stipple">Stipple</option>
           <option value="solid">Solid rock</option>
@@ -271,12 +280,14 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
           <option value="classic">Old-school blue</option>
           <option value="blueprint">Blueprint</option>
           <option value="lantern">Lantern</option>
+          <option value="graph">Graph paper</option>
         </select>
       </div>
       <div class="checks">
         <label><input id="numbers" type="checkbox" checked> Room numbers</label>
         <label><input id="decor" type="checkbox" checked> Furnishings</label>
         <label><input id="showTitle" type="checkbox" checked> Title</label>
+        <label><input id="grit" type="checkbox"> Cave grit</label>
       </div>
     </fieldset>
 
@@ -663,6 +674,10 @@ function buildGeometry(map) {
     }
   }
   for (const n of niches) polys.push(nichePoly(n));
+  for (const e of map.exits || []) { // carry exit passages past the edge so they open off the map
+    const [dx, dy] = DIRS[e.d], x0 = e.x + Math.min(0, dx) * 3, y0 = e.y + Math.min(0, dy) * 3;
+    polys.push(orient([[x0, y0], [x0 + 1 + Math.abs(dx) * 3, y0], [x0 + 1 + Math.abs(dx) * 3, y0 + 1 + Math.abs(dy) * 3], [x0, y0 + 1 + Math.abs(dy) * 3]]));
+  }
   map.polys = polys; map.holes = holes;
   map.inHole = (x, y) => holes.some(hp => inPoly(hp, x, y));
   // The merged outline of all floor shapes (MIT polygon-clipping), so outer
@@ -1593,6 +1608,7 @@ function generate(o) {
   const tunnels = new Uint8Array(W * H);
   for (const gi of tunnelCells) if (!builtCells.has(gi)) { const x = gi % G - ox, y = Math.floor(gi / G) - oy; if (x >= 0 && y >= 0 && x < W && y < H && cells[y * W + x] === -1) tunnels[y * W + x] = 1; }
   const map = { W, H, cells, tunnels, rooms: outRooms, doors: outDoors, niches: outNiches, seed: o.seed };
+  addEntrances(map, o, rooms[0] ? rooms[0].id : 1);
   buildGeometry(map);
   map.linkKinds = [...linkKind.values()];
   if (cycle && rooms[cycle.goal - 1]) { map.cycle = cycle; map.goal = cycle.goal; map.keyRoom = cycle.keyRoom; }
@@ -1601,6 +1617,65 @@ function generate(o) {
   if (SYM !== "none") mirrorDecor(map, AX - ox);
   map.title = dungeonName(o.seed);
   return map;
+}
+
+/* Extra entrances (Dyson Logos: "a good dungeon has at LEAST two entrances").
+   Each is a passage from an outer room straight off the edge of the map,
+   or failing that a stair up from a room far from the first entrance. */
+function addEntrances(map, o, firstId) {
+  map.exits = []; map.upRooms = [];
+  const want = (o.entrances || 1) - 1;
+  if (want <= 0) return;
+  const rng = RNG(o.seed + "|entrances");
+  const { W, H, cells, rooms } = map;
+  const at = (x, y) => x < 0 || y < 0 || x >= W || y >= H ? 0 : cells[y * W + x];
+  const first = rooms.find(r => r.id === firstId) || rooms[0];
+  const fc = [first.x + first.w / 2, first.y + first.h / 2];
+  // far from the first entrance, so the entrances lead into different parts of the dungeon
+  const order = rooms.filter(r => r !== first).sort((a, b) => Math.hypot(b.x + b.w / 2 - fc[0], b.y + b.h / 2 - fc[1]) - Math.hypot(a.x + a.w / 2 - fc[0], a.y + a.h / 2 - fc[1]));
+  const doorKeys = new Set(map.doors.map(d => d.o + d.x + "," + d.y));
+  const used = new Set([first.id]);
+  for (const r of rooms) if (!r.poly) r.poly = roomPoly(r);
+  const edgeRoute = r => {
+    let best = null;
+    for (let d = 0; d < 4; d++) {
+      const [dx, dy] = DIRS[d], tx = -dy, ty = dx;
+      for (let i = 0; i < (dx ? r.h : r.w); i++) {
+        const sx = dx > 0 ? r.x + r.w - 1 : dx < 0 ? r.x : r.x + i, sy = dy > 0 ? r.y + r.h - 1 : dy < 0 ? r.y : r.y + i;
+        if (at(sx, sy) !== r.id || !doorOK(r, sx, sy, d)) continue;
+        const path = [];
+        let x = sx + dx, y = sy + dy, ok = true;
+        while (x >= 0 && y >= 0 && x < W && y < H) {
+          if (at(x, y) !== 0 || at(x + tx, y + ty) !== 0 || at(x - tx, y - ty) !== 0) { ok = false; break; }
+          path.push([x, y]); x += dx; y += dy;
+        }
+        if (!ok || path.length < 2 || path.length > 10) continue;
+        if (best && best.path.length <= path.length) continue;
+        best = { sx, sy, d, path };
+      }
+    }
+    return best;
+  };
+  for (const r of order) {
+    if (map.exits.length + map.upRooms.length >= want) break;
+    if (used.has(r.id) || [...used].some(u => { const q = rooms.find(z => z.id === u); return Math.hypot(q.x - r.x, q.y - r.y) < 6; })) continue;
+    let route = (map.exits.length <= map.upRooms.length || rng.chance(0.6)) ? edgeRoute(r) : null;
+    // keep exits well apart and on different sides where possible
+    if (route) { const [ex, ey] = route.path[route.path.length - 1];
+      if (map.exits.some(e => e.d === route.d || Math.hypot(e.x - ex, e.y - ey) < Math.max(W, H) / 3)) route = null; }
+    if (route) {
+      const cave = r.shape.type === "cave";
+      for (const [x, y] of route.path) { cells[y * W + x] = -1; if (cave) map.tunnels[y * W + x] = 1; }
+      const [fx, fy] = route.path[0], key = route.d % 2 === 0 ? "v" + Math.max(route.sx, fx) + "," + fy : "h" + fx + "," + Math.max(route.sy, fy);
+      if (!doorKeys.has(key)) {
+        const type = cave ? "open" : rng.pick(["door", "door", "arch", "bars"]);
+        map.doors.push(route.d % 2 === 0 ? { o: "v", x: Math.max(route.sx, fx), y: fy, type } : { o: "h", x: fx, y: Math.max(route.sy, fy), type });
+      }
+      const [ex, ey] = route.path[route.path.length - 1];
+      map.exits.push({ x: ex, y: ey, d: route.d, room: r.id });
+    } else map.upRooms.push(r.id);
+    used.add(r.id);
+  }
 }
 
 // In symmetric layouts, furnishings and lakes are copied from each room to
@@ -1666,6 +1741,7 @@ function furnish(map, seed) {
   }
   const first = rooms.find(r => r.num === 1);
   if (first) stairsIn(first, false);
+  for (const id of map.upRooms || []) { const r = rooms.find(q => q.id === id); if (r) stairsIn(r, false); }
   const deepest = (map.goal && rooms.find(r => r.id === map.goal && r.num !== 1)) || rooms.filter(r => r.num !== 1).sort((a, b) => b.depth - a.depth || b.num - a.num)[0];
   if (deepest) stairsIn(deepest, true);
   for (const r of rooms) {
@@ -1786,6 +1862,7 @@ const PALETTES = {
   parchment: { bg: "#dcc79b", floor: "#f2e5c4", floorAlt: "#e7d6ac", ink: "#3a2714", grid: "rgba(58,39,20,.2)", shadow: "rgba(58,39,20,.15)", rock: "#b0925c", wallFill: "#8b6c41", detail: "rgba(58,39,20,.42)", water: "#b8bf9c", shallow: "#dcd7b4" },
   classic:   { bg: "#6d9bd0", floor: "#ffffff", floorAlt: "#e8f0fa", ink: "#2b5f9e", grid: "rgba(43,95,158,.38)", shadow: "rgba(43,95,158,.10)", rock: "#6d9bd0", wallFill: "#2b5f9e", detail: "rgba(43,95,158,.55)", water: "#b4cfec", shallow: "#dbe8f6" },
   blueprint: { bg: "#1c3d6b", floor: "#234d86", floorAlt: "#28558f", ink: "#e8f0ff", grid: "rgba(232,240,255,.2)", shadow: "rgba(6,16,32,.25)", rock: "#173459", wallFill: "#9ab7e0", detail: "rgba(232,240,255,.45)", water: "#163b6b", shallow: "#1e477d" },
+  graph:     { bg: "#fbfbf7", floor: "#ffffff", floorAlt: "#f2f3f4", ink: "#141414", grid: "rgba(70,112,178,.30)", shadow: "rgba(0,0,0,.07)", rock: "#e8e8e3", wallFill: "#9a9a96", detail: "rgba(20,20,20,.42)", water: "#dde6eb", shallow: "#eef2f4" },
   lantern:   { bg: "#16171b", floor: "#2c2a27", floorAlt: "#34312d", ink: "#e6dcc6", grid: "rgba(230,220,198,.11)", shadow: "rgba(0,0,0,.4)", rock: "#1f2024", wallFill: "#6f685c", detail: "rgba(230,220,198,.35)", water: "#1c262b", shallow: "#262d2c" }
 };
 const PRESETS = {
@@ -1793,7 +1870,9 @@ const PRESETS = {
   parchment: { walls: "sketchy", floor: "flagstones", grid: "lines", outside: "hatch", palette: "parchment", depth: 1.5, weight: 100, shadow: "cast" },
   classic:   { walls: "fine", floor: "plain", grid: "lines", outside: "solid", palette: "classic", depth: 1, weight: 120, shadow: "none" },
   blueprint: { walls: "double", floor: "plain", grid: "lines", outside: "cross", palette: "blueprint", depth: 1.25, weight: 90, shadow: "none" },
-  lantern:   { walls: "stone", floor: "cobble", grid: "dots", outside: "stipple", palette: "lantern", depth: 2, weight: 100, shadow: "soft" }
+  lantern:   { walls: "stone", floor: "cobble", grid: "dots", outside: "stipple", palette: "lantern", depth: 2, weight: 100, shadow: "soft" },
+  // pen on graph paper: heavy walls, short alternating hatch strokes, bare paper beyond, grit on cave floors
+  graph:     { walls: "ink", floor: "plain", grid: "lines", outside: "pen", palette: "graph", depth: 1.25, weight: 140, shadow: "none", cluster: 34, strokeGap: 10, grit: true }
 };
 
 /* ================================================================
@@ -2060,16 +2139,20 @@ function renderMap(canvas, map, st, S) {
 
   // ---- surroundings ----
   ctx.lineCap = "round";
-  if (st.outside === "hatch" || st.outside === "cross") {
-    const cross = st.outside === "cross";
+  if (st.outside === "hatch" || st.outside === "cross" || st.outside === "pen") {
+    const cross = st.outside === "cross", pen = st.outside === "pen";
     const step = st.strokeGap;
     // line weight and wobble shrink with the spacing, so tight hatching stays crisp
-    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(0.5, S * Math.min(cross ? 0.024 : 0.03, step * 0.32));
+    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(0.5, S * Math.min(cross ? 0.024 : pen ? 0.036 : 0.03, step * (pen ? 0.38 : 0.32)));
     ctx.beginPath();
     const jit = Math.min(0.035, step * 0.22);
     for (const c of hatchCells(map, st.depth, st.cluster)) {
       const sets = cross ? [[c.angle, step * 1.5], [c.angle + Math.PI / 2, step * 1.5]] : [[c.angle, step]];
-      for (const [a, step] of sets) for (const [x0, y0, x1, y1] of clusterStrokes(c, a, step)) {
+      for (const [a, step] of sets) for (let [x0, y0, x1, y1] of clusterStrokes(c, a, step)) {
+        if (pen) { // hand-drawn: each stroke a little shorter at a random end, and slightly off-angle
+          const dx = x1 - x0, dy = y1 - y0, t0 = rr.range(0, 0.18), t1 = rr.range(0, 0.18), tw = rr.range(-0.04, 0.04);
+          [x0, y0, x1, y1] = [x0 + dx * t0 - dy * tw, y0 + dy * t0 + dx * tw, x1 - dx * t1 + dy * tw, y1 - dy * t1 - dx * tw];
+        }
         ctx.moveTo((x0 + rr.range(-jit, jit)) * S, (y0 + rr.range(-jit, jit)) * S);
         ctx.lineTo((x1 + rr.range(-jit, jit)) * S, (y1 + rr.range(-jit, jit)) * S);
       }
@@ -2130,6 +2213,23 @@ function renderMap(canvas, map, st, S) {
         const rx = S * rr.range(0.16, 0.22), ry = S * rr.range(0.14, 0.2);
         ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, rr.range(0, Math.PI), 0, Math.PI * 2);
         ctx.fillStyle = rr.f() < 0.3 ? pal.floorAlt : pal.floor; ctx.fill(); ctx.stroke();
+      }
+    }
+  }
+  // grit: a scatter of dots and small stones on cave floors and natural tunnels
+  if (st.grit) {
+    const gr = RNG(map.seed + "|grit");
+    ctx.fillStyle = pal.detail; ctx.strokeStyle = pal.detail; ctx.lineWidth = Math.max(0.6, S * 0.018);
+    const caveIds = new Set(map.rooms.filter(r => r.shape.type === "cave").map(r => r.id));
+    for (let i = 0; i < cells.length; i++) {
+      if (!caveIds.has(cells[i]) && !(map.tunnels && map.tunnels[i])) continue;
+      const x = i % W, y = (i / W) | 0;
+      for (let k = 0; k < 5; k++) {
+        const px = x + gr.f(), py = y + gr.f(), big = gr.f() < 0.18;
+        if (!map.floorAt(px, py) || (map.wetAt && map.wetAt(px, py))) continue;
+        ctx.beginPath();
+        if (big) { const rad = S * gr.range(0.03, 0.06); for (let a = 0; a < 5; a++) { const an = a / 5 * Math.PI * 2 + gr.f(), rd = rad * gr.range(0.7, 1.2); a ? ctx.lineTo(px * S + Math.cos(an) * rd, py * S + Math.sin(an) * rd) : ctx.moveTo(px * S + Math.cos(an) * rd, py * S + Math.sin(an) * rd); } ctx.closePath(); ctx.stroke(); }
+        else { ctx.arc(px * S, py * S, Math.max(0.5, S * gr.range(0.012, 0.024)), 0, Math.PI * 2); ctx.fill(); }
       }
     }
   }
@@ -2751,6 +2851,18 @@ function renderMap(canvas, map, st, S) {
     ctx.restore();
   }
 
+  // ---- entrances off the map: an arrow pointing out ----
+  for (const e of map.exits || []) {
+    const [dx, dy] = DIRS[e.d], cx = (e.x + 0.5 - dx * 0.6) * S, cy = (e.y + 0.5 - dy * 0.6) * S, a = S * 0.22;
+    ctx.strokeStyle = pal.ink; ctx.lineWidth = Math.max(1, S * 0.05); ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - dx * a * 1.4, cy - dy * a * 1.4); ctx.lineTo(cx + dx * a * 1.4, cy + dy * a * 1.4);
+    ctx.moveTo(cx + dx * a * 1.4 - (dx * a + dy * a), cy + dy * a * 1.4 - (dy * a - dx * a));
+    ctx.lineTo(cx + dx * a * 1.4, cy + dy * a * 1.4);
+    ctx.lineTo(cx + dx * a * 1.4 - (dx * a - dy * a), cy + dy * a * 1.4 - (dy * a + dx * a));
+    ctx.stroke();
+  }
+
   // ---- room numbers ----
   if (st.numbers) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
@@ -2772,8 +2884,8 @@ function renderMap(canvas, map, st, S) {
    UI wiring
    ================================================================ */
 const $ = id => document.getElementById(id);
-const layoutIds = ["seed", "rooms", "layout", "symmetry", "paths", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "shapes", "niches", "water", "loops", "doors"];
-const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "cluster", "strokeGap", "palette", "shadow", "light", "numbers", "decor", "showTitle"];
+const layoutIds = ["seed", "rooms", "layout", "symmetry", "paths", "mix", "hallMin", "hallMax", "hallShape", "minSize", "maxSize", "shapes", "niches", "water", "entrances", "loops", "doors"];
+const lookIds = ["walls", "weight", "floor", "grid", "outside", "depth", "cluster", "strokeGap", "palette", "shadow", "light", "numbers", "decor", "showTitle", "grit"];
 const SEED_WORDS = ["moss", "ember", "salt", "rook", "veil", "brass", "cinder", "hollow", "lark", "ossuary", "marrow", "tallow", "wick", "flint", "gloam", "barrow", "quill", "rust"];
 let map = null;
 
@@ -2792,6 +2904,7 @@ function layoutOpts() {
     hallMin, hallMax, hallShape: $("hallShape").value, minSize, maxSize,
     loops: +$("loops").value / 100, doors: $("doors").value,
     symmetry: $("symmetry").value, paths: $("paths").value,
+    entrances: +$("entrances").value,
     shapes: $("shapes").value, niches: +$("niches").value / 100, water: +$("water").value / 100
   };
 }
@@ -2800,7 +2913,7 @@ function lookOpts() {
     walls: $("walls").value, weight: +$("weight").value, floor: $("floor").value, grid: $("grid").value,
     outside: $("outside").value, depth: +$("depth").value,
     cluster: +$("cluster").value / 100, strokeGap: +$("strokeGap").value / 100, palette: $("palette").value,
-    shadow: $("shadow").value, light: +$("light").value, numbers: $("numbers").checked, decor: $("decor").checked, title: $("showTitle").checked
+    shadow: $("shadow").value, light: +$("light").value, numbers: $("numbers").checked, decor: $("decor").checked, title: $("showTitle").checked, grit: $("grit").checked
   };
 }
 function syncOutputs() {
@@ -2815,7 +2928,7 @@ function syncOutputs() {
   const out = $("outside").value;
   $("depth").disabled = out === "solid" || out === "none";
   $("lightRow").hidden = $("shadow").value !== "cast";
-  $("cluster").disabled = $("strokeGap").disabled = !(out === "hatch" || out === "cross");
+  $("cluster").disabled = $("strokeGap").disabled = !(out === "hatch" || out === "cross" || out === "pen");
 }
 function drawScreen() {
   if (!map) return;
@@ -2831,7 +2944,8 @@ function drawScreen() {
   $("dname").textContent = map.title;
   const halls = map.cells.reduce((n, v) => n + (v === -1 ? 1 : 0), 0);
   const loopNote = map.cycle ? (layoutOpts().paths === "mixed" ? " · one loop" : " · main loop") + ({ lock: ", locked route and key", secret: " with a secret route", open: "" }[map.cycle.kind] || "") : "";
-  $("dmeta").textContent = `${map.rooms.length} rooms · ${map.doors.length} doorways · ${halls * 5} ft of halls${loopNote} · ${map.W} × ${map.H} squares`;
+  const ents = 1 + (map.exits ? map.exits.length : 0) + (map.upRooms ? map.upRooms.length : 0);
+  $("dmeta").textContent = `${map.rooms.length} rooms · ${ents} ${ents === 1 ? "entrance" : "entrances"} · ${map.doors.length} doorways · ${halls * 5} ft of halls${loopNote} · ${map.W} × ${map.H} squares`;
 }
 function regenerate() { map = generate(layoutOpts()); drawScreen(); }
 
@@ -2845,10 +2959,11 @@ function applyPreset(name) {
   const p = PRESETS[name]; if (!p) return;
   $("walls").value = p.walls; $("floor").value = p.floor; $("grid").value = p.grid; $("outside").value = p.outside;
   $("palette").value = p.palette; $("depth").value = p.depth; $("weight").value = p.weight; $("shadow").value = p.shadow;
+  $("cluster").value = p.cluster || 45; $("strokeGap").value = p.strokeGap || 10; $("grit").checked = !!p.grit;
 }
 
 layoutIds.forEach(id => $(id).addEventListener("input", () => schedule(true)));
-lookIds.forEach(id => $(id).addEventListener("input", () => { if (["walls", "floor", "grid", "outside", "palette", "depth", "weight", "shadow"].includes(id)) $("preset").value = "custom"; schedule(false); }));
+lookIds.forEach(id => $(id).addEventListener("input", () => { if (["walls", "floor", "grid", "outside", "palette", "depth", "weight", "shadow", "cluster", "strokeGap", "grit"].includes(id)) $("preset").value = "custom"; schedule(false); }));
 $("preset").addEventListener("input", () => { applyPreset($("preset").value); schedule(false); });
 $("reroll").addEventListener("click", () => { $("seed").value = newSeed(); schedule(true); });
 window.addEventListener("resize", () => schedule(false));

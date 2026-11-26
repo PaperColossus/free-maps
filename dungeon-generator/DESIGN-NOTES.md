@@ -50,3 +50,13 @@ Built:
 - **Looping and mixed paths.** One arc of rooms grows from the entrance; a second arc bows out the other way and then heads back toward the first, and the loop closes as soon as one of its rooms can link straight to a room on the first arc (a door in a shared wall, or a short straight hall). If no room manages that, any already-touching pair across the two arcs is linked; only then is a goal room placed and joined by dug halls. Minor loops are short detours of one or two rooms that rejoin the arc further on. The main loop is gated as before: lock and key, secret door, or two open routes. **Mixed** builds one small loop near the entrance (arcs of up to 3 rooms, at most one minor loop) and grows the rest as branches. On test maps, dug loop halls dropped to about a third of the earlier count.
 - **Optional links never wander.** Detours and extra links are skipped when their carved hall would be longer than about twice the gap between the rooms. Carving avoids running alongside an existing hall without joining it.
 - **Connectivity repair runs for every arrangement:** any room the entrance can't reach is joined to its nearest connected rooms, or made rectangular and retried.
+
+## Dyson Logos influence (researched)
+
+Sources: his [ENWorld tutorial](https://www.enworld.org/threads/old-fashioned-hand-drawn-maps-with-tutorial.332594/post-6058522), [Beyond Fomalhaut's analysis of The Winter Tombs](https://beyondfomalhaut.blogspot.com/2020/05/blog-anatomy-of-dungeon-map.html), and his [map copyright page](https://dysonlogos.blog/about/copyright/). His licence covers his maps, not his style; we borrow conventions only, copy no map, and don't use his name in the tool.
+
+Built:
+- **Ink & graph preset:** heavy ink walls (his second, thickening pass), pen hatching (short groups of strokes, each slightly shortened and off-angle, neighbours at contrasting angles), blue graph-paper grid, bare white paper beyond the hatching, no shadows, and grit (dots and small stones) on cave floors.
+- **Entrances:** one to three ("a good dungeon has at LEAST two entrances"). Extra entrances are a passage from an outer room straight off the map edge (a cave mouth for caves), kept apart and on different sides, or else a stair up in a room far from the first entrance.
+
+Planned: rivers that split the level, crossed by bridges and fords only where needed to keep every room reachable; elevation (daises, ledges, short stairs between areas).
