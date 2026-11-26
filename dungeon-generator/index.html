@@ -691,8 +691,12 @@ function buildGeometry(map) {
   if (map.river) polys.push(map.river.poly);
   map.wetAt = (x, y) => {
     if (!map.river || !inPoly(map.river.poly, x, y)) return false;
-    return !(map.crossings || []).some(c => x >= c.x0 && x <= c.x1 && y >= c.y0 && y <= c.y1);
+    return !map.onCrossing(x, y);
   };
+  map.onCrossing = (x, y) => (map.crossings || []).some(c => x >= c.x0 - 0.35 && x <= c.x1 + 0.35 && y >= c.y0 - 0.35 && y <= c.y1 + 0.35);
+  // anything within rad of (x, y) on water or a crossing?
+  map.wetNear = (x, y, rad) => !!map.river && [[0, 0], [rad, 0], [-rad, 0], [0, rad], [0, -rad], [rad * 0.7, rad * 0.7], [-rad * 0.7, rad * 0.7], [rad * 0.7, -rad * 0.7], [-rad * 0.7, -rad * 0.7]]
+    .some(([a, b]) => { const px = x + a, py = y + b; return inPoly(map.river.poly, px, py) || map.onCrossing(px, py); });
   for (const e of map.exits || []) { // carry exit passages past the edge so they open off the map
     const [dx, dy] = DIRS[e.d], x0 = e.x + Math.min(0, dx) * 3, y0 = e.y + Math.min(0, dy) * 3;
     polys.push(orient([[x0, y0], [x0 + 1 + Math.abs(dx) * 3, y0], [x0 + 1 + Math.abs(dx) * 3, y0 + 1 + Math.abs(dy) * 3], [x0, y0 + 1 + Math.abs(dy) * 3]]));
@@ -1522,6 +1526,7 @@ function generate(o) {
     };
     for (const r of rooms) {
       if (r.mirror && r.twin) continue; // gets its twin's niches
+      if (r.shape.type === "cave") continue; // natural caves don't get carved niches
       if (!nr.chance(o.niches)) continue;
       const kind = nr.pick(["round", "square", "deep"]); // one style per room keeps it orderly
       const want = nr.int(1, Math.max(1, Math.round((r.w + r.h) / 4)));
@@ -1670,7 +1675,7 @@ function addElevation(map, o, axC) {
   const feats = map.features;
   const busy = (x, y, rad) => // anything already there?
     feats.some(f => (f.type === "stairs" ? Math.hypot(f.x + 0.5 - x, f.y + 0.5 - y) : Math.hypot(f.x - x, f.y - y)) < rad + (f.type === "pool" ? f.r : f.type === "stairs" ? 0.75 : 0.35))
-    || (map.lakes || []).some(l => l.blobs.some(b => inPoly(b, x, y))) || (map.wetAt && map.wetAt(x, y));
+    || (map.lakes || []).some(l => l.blobs.some(b => inPoly(b, x, y))) || (map.wetNear && map.wetNear(x, y, rad + 0.1));
   const mirrorPts = pts => pts.map(([x, y]) => [2 * axC + 1 - x, y]);
   const twinOfRoom = r => r.twin ? rooms.find(q => q.id === r.twin) : null;
   const add = (f, room) => {
@@ -1757,10 +1762,11 @@ function addElevation(map, o, axC) {
     }
   }
   // ---- steps in halls ----
+  const exitCells = new Set((map.exits || []).flatMap(e => e.cells || []));
   const straight = [];
   for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
     const i = y * W + x;
-    if (cells[i] !== -1 || (map.tunnels && map.tunnels[i]) || (map.wet && map.wet[i])) continue;
+    if (cells[i] !== -1 || (map.tunnels && map.tunnels[i]) || (map.wet && map.wet[i]) || exitCells.has(i)) continue;
     const e = at(x + 1, y) !== 0 && at(x - 1, y) !== 0 && at(x, y - 1) === 0 && at(x, y + 1) === 0;
     const n = at(x, y + 1) !== 0 && at(x, y - 1) !== 0 && at(x - 1, y) === 0 && at(x + 1, y) === 0;
     if (!e && !n) continue;
@@ -1797,7 +1803,8 @@ function addRiver(map, o, firstId, axC) {
   const doorSet = new Set(doors.map(d => d.o + d.x + "," + d.y));
   const isFloor = v => v !== 0 && v !== -2;
   const floorCount = cells.reduce((n, v) => n + (isFloor(v) ? 1 : 0), 0);
-  for (let attempt = 0; attempt < 14; attempt++) {
+  const tries = o.river === "always" ? 60 : 14;
+  for (let attempt = 0; attempt < tries; attempt++) {
     // flow direction: across the longer side, or across the axis in symmetric maps
     const horiz = axC !== null ? true : W >= H ? rng.chance(0.65) : rng.chance(0.35);
     const L = horiz ? W : H, M = horiz ? H : W;
@@ -1818,6 +1825,7 @@ function addRiver(map, o, firstId, axC) {
       const k = Math.max(0, Math.min(samples.length - 1, Math.round((u + 4) / 0.25)));
       if (Math.abs(v - samples[k][1]) < samples[k][2] + 0.1) wet[y * W + x] = 1;
     }
+    if ((map.exits || []).some(e => e.cells.some(i => wet[i]))) continue; // keep exit passages dry
     let wetFloor = 0; for (let i = 0; i < wet.length; i++) if (wet[i] && isFloor(cells[i])) wetFloor++;
     if (wetFloor < 4 || wetFloor > floorCount * 0.16) continue;
     // the first entrance's stairs stay dry: room 1 must keep most of its floor
@@ -1942,7 +1950,7 @@ function addEntrances(map, o, firstId) {
         map.doors.push(route.d % 2 === 0 ? { o: "v", x: Math.max(route.sx, fx), y: fy, type } : { o: "h", x: fx, y: Math.max(route.sy, fy), type });
       }
       const [ex, ey] = route.path[route.path.length - 1];
-      map.exits.push({ x: ex, y: ey, d: route.d, room: r.id });
+      map.exits.push({ x: ex, y: ey, d: route.d, room: r.id, cells: route.path.map(([x, y]) => y * W + x) });
     } else map.upRooms.push(r.id);
     used.add(r.id);
   }
@@ -2071,7 +2079,8 @@ function furnish(map, seed) {
   for (let i = 0; i < cells.length; i++) if (cells[i] === -1 && rng.chance(0.04)) {
     feats.push({ type: "rubble", x: (i % W) + rng.range(0.2, 0.8), y: Math.floor(i / W) + rng.range(0.2, 0.8), s: rng.f() });
   }
-  return map.wetAt ? feats.filter(f => f.type === "stairs" || !map.wetAt(f.x, f.y)) : feats;
+  const footprint = { column: 0.22, statue: 0.45, well: 0.4, bust: 0.17, rubble: 0.2, key: 0.3, pool: 0 };
+  return map.river ? feats.filter(f => f.type === "stairs" || !map.wetNear(f.x, f.y, f.type === "pool" ? f.r + 0.2 : footprint[f.type] || 0.3)) : feats;
 }
 
 /* Lakes: lumpy blobs of water inside larger rooms and caves, with a
@@ -2378,7 +2387,7 @@ function renderMap(canvas, map, st, S) {
   const pal = PALETTES[st.palette];
   const rr = RNG(map.seed + "|ink");
   const { W, H, cells } = map;
-  const titleRows = st.title ? 3 : 0;
+  const titleRows = st.title ? 2 : 0;
   canvas.width = Math.round(W * S); canvas.height = Math.round((H + titleRows) * S);
   const ctx = canvas.getContext("2d");
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -2395,9 +2404,11 @@ function renderMap(canvas, map, st, S) {
     ctx.fillStyle = st.outside === "solid" ? pal.floor : pal.ink;
     ctx.font = `700 ${S * 1.25}px "Alegreya SC", Georgia, serif`;
     ctx.textBaseline = "middle"; ctx.textAlign = "left";
-    ctx.fillText(map.title, S * 1.2, S * 1.9);
+    ctx.fillText(map.title, S * 1.2, S * 1.25);
     ctx.translate(0, titleRows * S);
   }
+  ctx.save(); // everything below stays inside the map area (passages off the edge don't run into the title)
+  ctx.beginPath(); ctx.rect(0, 0, W * S, H * S); ctx.clip();
 
   const floorPath = new Path2D();
   if (map.outline) { // merged outline: outer rings one way, holes the other, so non-zero fills leave holes empty
@@ -2523,7 +2534,8 @@ function renderMap(canvas, map, st, S) {
     ctx.restore();
     for (const c of map.crossings || []) {
       const along = c.horiz; // travel runs across the river
-      const x0 = c.x0 * S, y0 = c.y0 * S, x1 = c.x1 * S, y1 = c.y1 * S;
+      const ext = 0.3; // reach onto dry floor at both ends
+      const x0 = (c.x0 - (c.horiz ? 0 : ext)) * S, y0 = (c.y0 - (c.horiz ? ext : 0)) * S, x1 = (c.x1 + (c.horiz ? 0 : ext)) * S, y1 = (c.y1 + (c.horiz ? ext : 0)) * S;
       if (c.kind === "bridge") {
         const ins = S * 0.12, bx0 = along ? x0 + ins : x0, bx1 = along ? x1 - ins : x1, by0 = along ? y0 : y0 + ins, by1 = along ? y1 : y1 - ins;
         ctx.fillStyle = pal.floor; ctx.fillRect(bx0, by0, bx1 - bx0, by1 - by0);
@@ -2601,6 +2613,7 @@ function renderMap(canvas, map, st, S) {
   const wallEdge = (o, pos, i) => {
     const [a, b] = side(o, pos, i);
     if (map.wet) { const [ia, ib] = o === "h" ? [(pos - 1) * W + i, pos * W + i] : [i * W + pos - 1, i * W + pos]; if (map.wet[ia] && map.wet[ib]) return false; }
+    if (a === -2 || b === -2) return false; // the river's channel opens onto whatever it meets
     if (caveId.has(a) && caveId.has(b)) return false; // neighbouring caves simply open into each other
     if (map.tunnels && ((a === -1 && caveId.has(b)) || (b === -1 && caveId.has(a)))) {
       const ti = o === "h" ? (a === -1 ? (pos - 1) * W + i : pos * W + i) : (a === -1 ? i * W + pos - 1 : i * W + pos);
@@ -3233,6 +3246,7 @@ function renderMap(canvas, map, st, S) {
     }
   }
 
+  ctx.restore();
   // ---- paper grain ----
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1; ctx.fillStyle = noisePattern(ctx); ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -3292,7 +3306,7 @@ function drawScreen() {
   if (!map) return;
   const wrap = $("mapwrap"), c = $("map");
   const st = lookOpts();
-  const rows = map.H + (st.title ? 3 : 0);
+  const rows = map.H + (st.title ? 2 : 0);
   const pad = 2 * parseFloat(getComputedStyle(wrap).paddingLeft);
   const cw = Math.max(100, wrap.clientWidth - pad), ch = Math.max(100, wrap.clientHeight - pad);
   const cssS = Math.min(cw / map.W, ch / rows);
@@ -3330,7 +3344,7 @@ $("export").addEventListener("click", () => {
   if (!map) return;
   const st = lookOpts();
   let S = +$("ppi").value;
-  const maxSide = 12000, rows = map.H + (st.title ? 3 : 0);
+  const maxSide = 12000, rows = map.H + (st.title ? 2 : 0);
   if (Math.max(map.W, rows) * S > maxSide) S = Math.floor(maxSide / Math.max(map.W, rows));
   const c = document.createElement("canvas");
   renderMap(c, map, st, S);
