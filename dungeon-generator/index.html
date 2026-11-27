@@ -439,7 +439,8 @@ function roomPoly(r) {
     return [orient(circlePts(cc[0], cc[1], D / 2)), orient(nb)];
   }
   let pts;
-  if (sh.type === "capsule") { // a long hall with both ends rounded
+  if (sh.type === "hewn") pts = sh.pts.map(([px, py]) => [x + px, y + py]);
+  else if (sh.type === "capsule") { // a long hall with both ends rounded
     const horiz = w >= h, R = (horiz ? h : w) / 2;
     if (horiz) pts = [[x + R, y], [x + w - R, y], ...arcPts(x + w - R, y + R, R, -Math.PI / 2, Math.PI / 2, 20).slice(1, -1), [x + w - R, y + h], [x + R, y + h], ...arcPts(x + R, y + R, R, Math.PI / 2, Math.PI * 1.5, 20).slice(1, -1)];
     else pts = [[x + w, y + R], [x + w, y + h - R], ...arcPts(x + R, y + h - R, R, 0, Math.PI, 20).slice(1, -1), [x, y + h - R], [x, y + R], ...arcPts(x + R, y + R, R, Math.PI, Math.PI * 2, 20).slice(1, -1)];
@@ -537,6 +538,39 @@ function makeCave(rng, w, h) {
   }
   return { type: "cave", circles };
 }
+// Hewn room: an irregular polygon cut from its footprint. Each corner gets
+// its own cut (angled at an uneven slope, stepped, or left square), all on
+// half squares so the room still sits on the grid. Sides keep at least two
+// squares of straight wall, so doors fit. symX mirrors left and right.
+function makeHewn(rng, w, h, symX) {
+  const maxA = Math.max(0, Math.floor(w - 2) / 2 - 0.5), maxB = Math.max(0, Math.floor(h - 2) / 2 - 0.5);
+  const half = (lo, hi) => Math.round(rng.range(lo, hi) * 2) / 2;
+  const corner = () => {
+    const kind = rng.pick(["diag", "diag", "facet", "facet", "step", "none"]);
+    if (kind === "none") return { kind };
+    let a = half(1, Math.min(3, maxA)), b = half(1, Math.min(3, maxB));
+    if (kind === "diag" && a === b && rng.chance(0.7)) { if (a + 0.5 <= maxA) a += 0.5; else if (b + 0.5 <= maxB) b += 0.5; } // uneven slopes
+    if (a <= 0 || b <= 0) return { kind: "none" };
+    return { kind, a, b };
+  };
+  let c;
+  for (let t = 0; t < 10; t++) {
+    c = [corner(), corner(), corner(), corner()]; // TL, TR, BR, BL
+    if (symX) { c[1] = { ...c[0] }; c[2] = { ...c[3] }; }
+    const cut = c.filter(k => k.kind !== "none").length;
+    if (cut >= 3 && !(c.every(k => k.kind === c[0].kind && k.a === c[0].a && k.b === c[0].b))) break;
+  }
+  const P = [];
+  // facet: two flatter facets instead of one (a bend a little toward the corner)
+  const facet = (p0, p1, corner) => { const m = [(p0[0] + p1[0]) / 2 * 0.7 + corner[0] * 0.3, (p0[1] + p1[1]) / 2 * 0.7 + corner[1] * 0.3].map(v => Math.round(v * 2) / 2); return [p0, m, p1]; };
+  const add = (k, outer, ptsDiag, ptsStep) => P.push(...(k.kind === "none" ? [outer] : k.kind === "diag" ? ptsDiag : k.kind === "facet" ? facet(ptsDiag[0], ptsDiag[1], outer) : ptsStep));
+  const [tl, tr, br, bl] = c;
+  add(tl, [0, 0], [[0, tl.b], [tl.a, 0]], [[0, tl.b], [tl.a, tl.b], [tl.a, 0]]);
+  add(tr, [w, 0], [[w - tr.a, 0], [w, tr.b]], [[w - tr.a, 0], [w - tr.a, tr.b], [w, tr.b]]);
+  add(br, [w, h], [[w, h - br.b], [w - br.a, h]], [[w, h - br.b], [w - br.a, h - br.b], [w - br.a, h]]);
+  add(bl, [0, h], [[bl.a, h], [0, h - bl.b]], [[bl.a, h], [bl.a, h - bl.b], [0, h - bl.b]]);
+  return { type: "hewn", pts: P };
+}
 function pickShape(rng, w, h, variety, first) {
   const rect = [w, h, { type: "rect" }];
   if (variety === "caves" && !first) {
@@ -548,7 +582,7 @@ function pickShape(rng, w, h, variety, first) {
   const opts = [];
   if (Math.max(w, h) >= 4) opts.push("circle");
   if (Math.min(w, h) >= 3) opts.push("apse");
-  if (Math.min(w, h) >= 4) opts.push("chamfer", "ell", "hex");
+  if (Math.min(w, h) >= 4) opts.push("chamfer", "ell", "hex", "hewn", "hewn", "hewn");
   if (Math.min(w, h) >= 5) opts.push("bars", "bars", "cave", "capsule", "roundrect", "diamond");
   if (Math.max(w, h) >= 6) opts.push("quatrefoil", "keyhole", "ring");
   if (!opts.length) return rect;
@@ -560,6 +594,7 @@ function pickShape(rng, w, h, variety, first) {
     return [n, n, { type: "circle", pool }];
   }
   if (t === "cave") return [w + 1, h + 1, makeCave(rng, w + 1, h + 1)];
+  if (t === "hewn") return [w, h, makeHewn(rng, w, h, false)];
   if (t === "capsule") { // long and narrow: span odd so doors can sit mid-end
     let span = Math.min(w, h); if (span % 2 === 0) span++; span = Math.max(3, Math.min(span, 7));
     const along = Math.max(Math.max(w, h), span + 2);
@@ -948,6 +983,7 @@ function generate(o) {
   function mirrorShape(sh, w) {
     const m = JSON.parse(JSON.stringify(sh));
     if (m.type === "apse" || m.type === "keyhole") m.side = mDir(m.side);
+    else if (m.type === "hewn") m.pts = m.pts.map(([px, py]) => [w - px, py]);
     else if (m.type === "ell") m.corner = [1, 0, 3, 2][m.corner];
     else if (m.type === "bars") m.vb.x = w - m.vb.x - m.vb.w;
     else if (m.type === "cave") m.circles.forEach(c => {
@@ -963,6 +999,7 @@ function generate(o) {
     if (sh.type === "apse" && sh.side % 2 === 0) { sh = { type: "apse", side: rng.chance(0.5) ? 1 : 3 }; [w, h] = [h, w]; }
     if (sh.type === "keyhole" && sh.side % 2 === 0) { sh = { ...sh, side: rng.chance(0.5) ? 1 : 3 }; [w, h] = [h, w]; }
     if (w % 2 === 0) w++;
+    if (sh.type === "hewn") sh = makeHewn(rng, w, h, true);
     if (sh.type === "bars") { let vw = sh.vb.w; if ((w - vw) % 2) vw = vw + 1 <= w - 2 ? vw + 1 : vw - 1; sh = { type: "bars", hb: sh.hb, vb: { x: (w - vw) / 2, w: vw } }; }
     if (sh.type === "cave") sh = { type: "cave", circles: sh.circles.concat(mirrorShape({ type: "cave", circles: sh.circles }, w).circles) };
     return [w, h, sh];
